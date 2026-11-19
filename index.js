@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.0.1
+ * 柏宝书 · 场景生图桥接 v1.0.2
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.0.1';
+const VERSION = '1.0.2';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -34,6 +34,10 @@ const VERSION = '1.0.1';
  *     完全不重叠时模型会把人拉到画面两侧，看起来像并排站着没接触。
  */
 
+/**
+ * 兜底画风。MOSS 不给画风词时会掉进「3D 渲染」——皮肤过度平滑、头发像塑料、
+ * 眼神是贴图。所以空白默认不是"中性"，是"最差"。三选一实测见文档第 11 节。
+ */
 const STYLE_DEFAULT = '写实摄影，浅景深';
 
 /* ---------------- 通用清洗 ---------------- */
@@ -285,7 +289,8 @@ function sceneDesc(snap) {
 function composeScene(o = {}) {
     const snap = o.snapshot || {};
     const cards = o.cards || {};
-    const style = o.style || STYLE_DEFAULT;
+    // style 为空字符串 = 调用方已决定不加画风词（比如 ST 的 Prompt Prefix 已经在管）
+    const style = o.style === undefined ? STYLE_DEFAULT : String(o.style || '').trim();
     const maxPeople = Math.max(1, Math.min(3, o.maxPeople || 3));
     const report = [];
     const st = snap.state || {};
@@ -330,6 +335,7 @@ function composeScene(o = {}) {
             i === 0 ? x : x);
         const head = bits.filter(Boolean).join('，');
         const tail = [situation, style].filter(Boolean).join('，');
+        if (o.styleFrom) report.push(`画风: ${style || '不加'}（${o.styleFrom}）`);
         const text = sentenceClamp([head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'), 220);
         report.push(`外貌来源: ${p.src}`);
         return { mode: 'single', text, width: 1024, height: 1024, people, report };
@@ -343,7 +349,8 @@ function composeScene(o = {}) {
     if (situation) summaryBits.push(situation);
     if (scene.text) summaryBits.push(scene.text);
     if (light) summaryBits.push(light);
-    summaryBits.push(style);
+    if (style) summaryBits.push(style);
+    if (o.styleFrom) report.push(`画风: ${style || '不加'}（${o.styleFrom}）`);
 
     const boxes = layoutFor(people.length, kind);
     // 方位词按 bbox 中心的 x 排序分配，保证「说左边的人真的在左边」
@@ -411,7 +418,7 @@ const LS = {
 
 const st = {
     enabled: localStorage.getItem(LS.enabled) === 'true',
-    style: localStorage.getItem(LS.style) || CFG.style,
+    style: localStorage.getItem(LS.style),   // null = 没设过，走自动判断
     size: JSON.parse(localStorage.getItem(LS.size) || 'null') || CFG.sizeMulti,
     maxPeople: Number(localStorage.getItem(LS.people)) || CFG.maxPeople,
     busy: false,
@@ -469,6 +476,28 @@ function collectCards() {
     return cards;
 }
 
+/**
+ * 画风词优先级：显式设置 > 角色卡里的风格信号 > ST 的 Prompt Prefix > 兜底。
+ * 不能一律「写实摄影」——角色是二次元设定时，真人质感会变成 cosplay 感。
+ */
+function resolveStyle(cards) {
+    if (st.style) return { style: st.style, from: '手动设置' };
+
+    const blob = Object.values(cards || {}).join(' ').slice(0, 6000);
+    if (/动漫|二次元|日系插画|漫画风|赛璐璐|galgame|视觉小说|美少女|呆毛|猫耳|兽耳|异色瞳|anime|illustration/i.test(blob)) {
+        return { style: '动漫插画，赛璐璐上色', from: '角色卡(二次元)' };
+    }
+    if (/写实|真人|照片|摄影|realistic|photo/i.test(blob)) {
+        return { style: '写实摄影，浅景深', from: '角色卡(写实)' };
+    }
+
+    const sd = ctxOrNull()?.extensionSettings?.sd;
+    const prefix = String(sd?.prompt_prefix || '').trim();
+    if (prefix) return { style: '', from: 'ST 的 Prompt Prefix' };
+
+    return { style: '写实摄影，浅景深', from: '兜底' };
+}
+
 function activeChatName() {
     const ctx = ctxOrNull();
     return ctx?.name2 || '';
@@ -480,10 +509,13 @@ function buildPrompt() {
     const snap = getSnapshot();
     if (!snap) return { ok: false, reason: '柏宝书没加载，或这个聊天还没有记忆数据' };
 
+    const cards = collectCards();
+    const { style, from } = resolveStyle(cards);
     const res = composeScene({
         snapshot: snap,
-        cards: collectCards(),
-        style: st.style,
+        cards,
+        style,
+        styleFrom: from,
         maxPeople: st.maxPeople,
         width: st.size?.w || CFG.sizeMulti.w,
         height: st.size?.h || CFG.sizeMulti.h,
@@ -622,11 +654,18 @@ function register() {
                 return '';
             }
 
-            const mStyle = arg.match(/style=(.+)$/i);
+            const mStyle = arg.match(/style=(.*)$/i);
             if (mStyle) {
-                st.style = mStyle[1].trim();
-                localStorage.setItem(LS.style, st.style);
-                await echo(`[bbs-img] 画风后缀：${st.style}`);
+                const v = mStyle[1].trim();
+                if (!v || /^(auto|默认|自动)$/i.test(v)) {
+                    st.style = null;
+                    localStorage.removeItem(LS.style);
+                    await echo('[bbs-img] 画风改回自动（角色卡二次元→动漫插画，否则写实摄影）');
+                } else {
+                    st.style = v;
+                    localStorage.setItem(LS.style, v);
+                    await echo(`[bbs-img] 画风固定为：${st.style}`);
+                }
                 return '';
             }
 

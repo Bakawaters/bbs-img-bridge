@@ -19,13 +19,24 @@
 | `/bbs-img on` / `off` | 自动出图开关（存在 localStorage，刷新不丢） |
 | `/bbs-img maxchars=100` | 改提示词字数上限（默认 120） |
 
-## 拼装顺序
+## 拼装顺序（v0.2）
 
 ```
-protagonist.appearance → outfit → state.location → 时间→光照 → 写实摄影，浅景深
+外观 → outfit → state.location → 时间→光照 → 写实摄影，浅景深
 ```
 
-外貌为空时回退到角色卡 `description` 前 60 字。**仍然为空就直接跳过，绝不退回整条消息。**
+**外观的主源是角色卡的 `description`，不是柏宝书。** 柏宝书的 `protagonist.appearance` 只在「剧情里明确写到外貌变化」时才记录（见它 `MemProtagonist` 的定义：「当前稳定外貌/身体特征；永久变身、伤疤等变化后覆盖」），大多数聊天里这个字段是空的 —— 空的不是故障。
+
+所以：
+
+| 要素 | 来源 |
+|---|---|
+| 静态外观 | 角色卡 description（按关键词抠出外貌句，≤80 字） |
+| 当前服装 / 伤病 | 柏宝书 `protagonist.outfit` / `condition` |
+| 地点 | 柏宝书 `state.location` |
+| 光线 | 柏宝书 `state.time` → 光照描述 |
+
+角色卡也没写外貌时，直接跳过并提示去补，**绝不退回整条消息**。
 
 ## 已知边界
 

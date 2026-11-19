@@ -231,10 +231,67 @@ function register() {
     const { SlashCommand, SlashCommandParser } = ctx;
     if (!SlashCommand || !SlashCommandParser) return;
 
+    const setStyle = async (v) => {
+        v = String(v ?? '').trim();
+        if (!v || /^(auto|默认|自动)$/i.test(v)) {
+            st.style = null;
+            localStorage.removeItem(LS.style);
+            await echo('[bbs-img] 画风改回自动（角色卡二次元→动漫插画，否则写实摄影）');
+        } else {
+            st.style = v;
+            localStorage.setItem(LS.style, v);
+            await echo(`[bbs-img] 画风固定为：${st.style}`);
+        }
+    };
+    const setPeople = async (v) => {
+        const n = Number(String(v).match(/\d/)?.[0]);
+        if (!n) { await echo('[bbs-img] people= 后面要跟数字 1–3'); return; }
+        st.maxPeople = Math.max(1, Math.min(3, n));
+        localStorage.setItem(LS.people, String(st.maxPeople));
+        await echo(`[bbs-img] 最多画 ${st.maxPeople} 人`);
+    };
+    const setSize = async (v) => {
+        const m = String(v).match(/(\d+)\s*[xX*]\s*(\d+)/);
+        if (!m) { await echo('[bbs-img] size= 要写成 1248x832 这样'); return; }
+        st.size = { w: Number(m[1]), h: Number(m[2]) };
+        localStorage.setItem(LS.size, JSON.stringify(st.size));
+        await echo(`[bbs-img] 多人图尺寸 ${st.size.w}x${st.size.h}（bbox 会按新尺寸重算）`);
+    };
+
+    /*
+     * ⚠️ ST 的解析器会把任何 `key=value` 当成命名参数（正则 /^(\w+)=/），
+     * 所以 /bbs-img style=xxx 里的 style 根本不会出现在无名参数里 ——
+     * 必须从第 1 个实参（named）里读，只读 value 会变成"啥也没设，直接出图"。
+     */
+    const namedArgumentList = [];
+    try {
+        const N = ctx.SlashCommandNamedArgument ?? ctx.SlashCommandParser?.SlashCommandNamedArgument;
+        if (N?.fromProps) {
+            for (const [name, description] of [
+                ['style', '画风后缀；auto 回到自动判断'],
+                ['people', '最多画几个人 1–3'],
+                ['size', '多人图尺寸，如 1248x832'],
+            ]) {
+                namedArgumentList.push(N.fromProps({
+                    name, description, typeList: ['string'], isRequired: false, acceptsMultiple: false,
+                }));
+            }
+        }
+    } catch (e) {
+        console.warn('[bbs-img] 命名参数声明失败（不影响使用）', e);
+    }
+
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'bbs-img',
         returns: 'string',
-        callback: async (_named, value) => {
+        namedArgumentList,
+        callback: async (named, value) => {
+            const n = named || {};
+            let touched = false;
+            if (n.style !== undefined) { await setStyle(n.style); touched = true; }
+            if (n.people !== undefined) { await setPeople(n.people); touched = true; }
+            if (n.size !== undefined) { await setSize(n.size); touched = true; }
+
             const arg = String(value || '').trim();
             const low = arg.toLowerCase();
 
@@ -257,35 +314,15 @@ function register() {
             }
 
             const mStyle = arg.match(/style=(.*)$/i);
-            if (mStyle) {
-                const v = mStyle[1].trim();
-                if (!v || /^(auto|默认|自动)$/i.test(v)) {
-                    st.style = null;
-                    localStorage.removeItem(LS.style);
-                    await echo('[bbs-img] 画风改回自动（角色卡二次元→动漫插画，否则写实摄影）');
-                } else {
-                    st.style = v;
-                    localStorage.setItem(LS.style, v);
-                    await echo(`[bbs-img] 画风固定为：${st.style}`);
-                }
-                return '';
-            }
+            if (mStyle) { await setStyle(mStyle[1]); return ''; }
 
             const mPeople = arg.match(/people=(\d)/i);
-            if (mPeople) {
-                st.maxPeople = Math.max(1, Math.min(3, Number(mPeople[1])));
-                localStorage.setItem(LS.people, String(st.maxPeople));
-                await echo(`[bbs-img] 最多画 ${st.maxPeople} 人`);
-                return '';
-            }
+            if (mPeople) { await setPeople(mPeople[1]); return ''; }
 
             const mSize = arg.match(/size=(\d+)x(\d+)/i);
-            if (mSize) {
-                st.size = { w: Number(mSize[1]), h: Number(mSize[2]) };
-                localStorage.setItem(LS.size, JSON.stringify(st.size));
-                await echo(`[bbs-img] 多人图尺寸 ${st.size.w}x${st.size.h}（bbox 会按新尺寸重算）`);
-                return '';
-            }
+            if (mSize) { await setSize(`${mSize[1]}x${mSize[2]}`); return ''; }
+
+            if (!arg && touched) return '';   // 只设参数，不出图
 
             const r = await doGenerate(true);
             if (!r.ok && r.reason !== 'duplicate') await echo(`[bbs-img] ${r.reason}`);

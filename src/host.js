@@ -20,7 +20,7 @@ const LS = {
 
 const st = {
     enabled: localStorage.getItem(LS.enabled) === 'true',
-    style: localStorage.getItem(LS.style) || CFG.style,
+    style: localStorage.getItem(LS.style),   // null = 没设过，走自动判断
     size: JSON.parse(localStorage.getItem(LS.size) || 'null') || CFG.sizeMulti,
     maxPeople: Number(localStorage.getItem(LS.people)) || CFG.maxPeople,
     busy: false,
@@ -78,6 +78,28 @@ function collectCards() {
     return cards;
 }
 
+/**
+ * 画风词优先级：显式设置 > 角色卡里的风格信号 > ST 的 Prompt Prefix > 兜底。
+ * 不能一律「写实摄影」——角色是二次元设定时，真人质感会变成 cosplay 感。
+ */
+function resolveStyle(cards) {
+    if (st.style) return { style: st.style, from: '手动设置' };
+
+    const blob = Object.values(cards || {}).join(' ').slice(0, 6000);
+    if (/动漫|二次元|日系插画|漫画风|赛璐璐|galgame|视觉小说|美少女|呆毛|猫耳|兽耳|异色瞳|anime|illustration/i.test(blob)) {
+        return { style: '动漫插画，赛璐璐上色', from: '角色卡(二次元)' };
+    }
+    if (/写实|真人|照片|摄影|realistic|photo/i.test(blob)) {
+        return { style: '写实摄影，浅景深', from: '角色卡(写实)' };
+    }
+
+    const sd = ctxOrNull()?.extensionSettings?.sd;
+    const prefix = String(sd?.prompt_prefix || '').trim();
+    if (prefix) return { style: '', from: 'ST 的 Prompt Prefix' };
+
+    return { style: '写实摄影，浅景深', from: '兜底' };
+}
+
 function activeChatName() {
     const ctx = ctxOrNull();
     return ctx?.name2 || '';
@@ -89,10 +111,13 @@ function buildPrompt() {
     const snap = getSnapshot();
     if (!snap) return { ok: false, reason: '柏宝书没加载，或这个聊天还没有记忆数据' };
 
+    const cards = collectCards();
+    const { style, from } = resolveStyle(cards);
     const res = composeScene({
         snapshot: snap,
-        cards: collectCards(),
-        style: st.style,
+        cards,
+        style,
+        styleFrom: from,
         maxPeople: st.maxPeople,
         width: st.size?.w || CFG.sizeMulti.w,
         height: st.size?.h || CFG.sizeMulti.h,
@@ -231,11 +256,18 @@ function register() {
                 return '';
             }
 
-            const mStyle = arg.match(/style=(.+)$/i);
+            const mStyle = arg.match(/style=(.*)$/i);
             if (mStyle) {
-                st.style = mStyle[1].trim();
-                localStorage.setItem(LS.style, st.style);
-                await echo(`[bbs-img] 画风后缀：${st.style}`);
+                const v = mStyle[1].trim();
+                if (!v || /^(auto|默认|自动)$/i.test(v)) {
+                    st.style = null;
+                    localStorage.removeItem(LS.style);
+                    await echo('[bbs-img] 画风改回自动（角色卡二次元→动漫插画，否则写实摄影）');
+                } else {
+                    st.style = v;
+                    localStorage.setItem(LS.style, v);
+                    await echo(`[bbs-img] 画风固定为：${st.style}`);
+                }
                 return '';
             }
 

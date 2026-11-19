@@ -5,6 +5,7 @@ const code = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const echoes = [];
 const commands = [];
 let captured = null;
+const store = {};   // 所有 run 共享，模拟 localStorage 持久化
 
 const snapshots = {
     pair: {
@@ -50,7 +51,11 @@ function makeCtx(snap) {
             }),
         },
         STBaiBaiBook: { getSnapshot: () => snap },
-        localStorage: { getItem: () => null, setItem: () => {} },
+        localStorage: {
+            getItem: k => (k in store ? store[k] : null),
+            setItem: (k, v) => { store[k] = String(v); },
+            removeItem: k => { delete store[k]; },
+        },
         document: { readyState: 'complete', addEventListener: () => {} },
         console,
     };
@@ -59,12 +64,12 @@ function makeCtx(snap) {
     return context;
 }
 
-function run(name, snap, arg) {
+function run(name, snap, arg, named = {}) {
     echoes.length = 0; commands.length = 0; captured = null;
     const ctx = makeCtx(snap);
     vm.runInContext(code, ctx);
     if (!captured) throw new Error(`${name}: 命令没注册`);
-    return captured.callback({}, arg).then(() => ({ echoes: [...echoes], commands: [...commands] }));
+    return captured.callback(named, arg).then(() => ({ echoes: [...echoes], commands: [...commands] }));
 }
 
 const ok = (c, m) => console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`);
@@ -93,3 +98,20 @@ ok(r.echoes.join('\n').includes('动漫赛璐璐'), 'style= 可改画风');
 
 r = await run('people', snapshots.pair, 'people=1');
 ok(r.echoes.join('\n').includes('最多画 1 人'), 'people= 生效');
+
+/* ---- 命名参数：ST 会把 key=value 从无名参数里拿走，必须从 named 读 ---- */
+const mem = {};
+globalThis.__mem = mem;
+r = await run('style-named', snapshots.pair, '', { style: '动漫插画，赛璐璐上色' });
+ok(r.echoes.join('\n').includes('动漫插画'), 'style= 走命名参数也能设上');
+ok(r.commands.length === 0, '只设 style 不触发出图');
+
+r = await run('style-used', snapshots.pair, 'preview+');
+ok(r.echoes.join('\n').includes('画风: 动漫插画，赛璐璐上色（手动设置）'), '设置了 style 后 preview 显示手动来源');
+
+r = await run('people-named', snapshots.pair, '', { people: '2' });
+ok(r.echoes.join('\n').includes('最多画 2 人'), 'people= 走命名参数生效');
+ok(r.commands.length === 0, '只设 people 不触发出图');
+
+r = await run('size-named', snapshots.pair, '', { size: '1024x1024' });
+ok(r.echoes.join('\n').includes('1024x1024'), 'size= 走命名参数生效');

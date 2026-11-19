@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.0.3
+ * 柏宝书 · 场景生图桥接 v1.1.0
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.0.3';
+const VERSION = '1.1.0';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -334,9 +334,11 @@ function composeScene(o = {}) {
         const bits = [p.looks, p.outfit, p.condition].filter(Boolean).map((x, i) =>
             i === 0 ? x : x);
         const head = bits.filter(Boolean).join('，');
-        const tail = [situation, style].filter(Boolean).join('，');
+        // 官方 Prompt Enhancer 规则:开头必须是「媒介 + 主体」,不能以动作开头
+        const [medium, ...rest] = String(style || '').split(/[，,]/).map(x => x.trim()).filter(Boolean);
+        const tail = [situation, ...rest].filter(Boolean).join('，');
         if (o.styleFrom) report.push(`画风: ${style || '不加'}（${o.styleFrom}）`);
-        const text = sentenceClamp([head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'), 220);
+        const text = sentenceClamp([medium, head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'), 240);
         report.push(`外貌来源: ${p.src}`);
         return { mode: 'single', text, width: 1024, height: 1024, people, report };
     }
@@ -345,11 +347,15 @@ function composeScene(o = {}) {
     const width = o.width || 1248;
     const height = o.height || 832;
 
+    // 官方规则:caption 以媒介开头(Anime-style digital illustration of / Studio photograph of),
+    // 不能以动词或动作开头。画风词里逗号前那段当媒介,后面的当尾缀。
+    const [medium, ...styleRest] = String(style || '').split(/[，,]/).map(x => x.trim()).filter(Boolean);
     const summaryBits = [];
+    if (medium) summaryBits.push(medium);
     if (situation) summaryBits.push(situation);
     if (scene.text) summaryBits.push(scene.text);
     if (light) summaryBits.push(light);
-    if (style) summaryBits.push(style);
+    if (styleRest.length) summaryBits.push(styleRest.join('，'));
     if (o.styleFrom) report.push(`画风: ${style || '不加'}（${o.styleFrom}）`);
 
     const boxes = layoutFor(people.length, kind);

@@ -15,6 +15,10 @@
  *     完全不重叠时模型会把人拉到画面两侧，看起来像并排站着没接触。
  */
 
+/**
+ * 兜底画风。MOSS 不给画风词时会掉进「3D 渲染」——皮肤过度平滑、头发像塑料、
+ * 眼神是贴图。所以空白默认不是"中性"，是"最差"。三选一实测见文档第 11 节。
+ */
 const STYLE_DEFAULT = '写实摄影，浅景深';
 
 /* ---------------- 通用清洗 ---------------- */
@@ -266,7 +270,8 @@ function sceneDesc(snap) {
 export function composeScene(o = {}) {
     const snap = o.snapshot || {};
     const cards = o.cards || {};
-    const style = o.style || STYLE_DEFAULT;
+    // style 为空字符串 = 调用方已决定不加画风词（比如 ST 的 Prompt Prefix 已经在管）
+    const style = o.style === undefined ? STYLE_DEFAULT : String(o.style || '').trim();
     const maxPeople = Math.max(1, Math.min(3, o.maxPeople || 3));
     const report = [];
     const st = snap.state || {};
@@ -311,6 +316,7 @@ export function composeScene(o = {}) {
             i === 0 ? x : x);
         const head = bits.filter(Boolean).join('，');
         const tail = [situation, style].filter(Boolean).join('，');
+        if (o.styleFrom) report.push(`画风: ${style || '不加'}（${o.styleFrom}）`);
         const text = sentenceClamp([head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'), 220);
         report.push(`外貌来源: ${p.src}`);
         return { mode: 'single', text, width: 1024, height: 1024, people, report };
@@ -324,7 +330,8 @@ export function composeScene(o = {}) {
     if (situation) summaryBits.push(situation);
     if (scene.text) summaryBits.push(scene.text);
     if (light) summaryBits.push(light);
-    summaryBits.push(style);
+    if (style) summaryBits.push(style);
+    if (o.styleFrom) report.push(`画风: ${style || '不加'}（${o.styleFrom}）`);
 
     const boxes = layoutFor(people.length, kind);
     // 方位词按 bbox 中心的 x 排序分配，保证「说左边的人真的在左边」

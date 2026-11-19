@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.0.0
+ * 柏宝书 · 场景生图桥接 v1.0.1
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -46,11 +46,13 @@ function flatten(s) {
 function visualOnly(s) {
     return flatten(s)
         .split(/[。；;]/)[0]                                   // 只取第一句
-        .replace(/[（(][^）)]*[）)]/g, '')                      // 括注
+        .replace(/[（(][^）)]*[）)]/g, '')                      // 成对的括注
+        .replace(/[（(][^）)]*$/, '')                          // 没闭合的括注：连同后半句一起丢
         .replace(/(她|他|它|对方|两人|二人)(心里|心中|暗自|似乎|好像|可能|觉得|感到|想着|打算|决定|犹豫)/g, '')
         .replace(/(想要|准备|打算|试图|企图|好像要|似乎要|可能会)/g, '')
         .replace(/[「」“”"'’]/g, '')
         .replace(/[|｜{}]/g, '，')
+        .replace(/[．。]+$/g, '')                               // 句末多余句号
         .replace(/，{2,}/g, '，')
         .replace(/^[，、\s]+|[，、\s]+$/g, '')
         .trim();
@@ -67,6 +69,22 @@ function selfOnly(s) {
 function clampText(s, n) {
     s = flatten(s);
     return s.length > n ? s.slice(0, n) : s;
+}
+
+/**
+ * 按句读截断：宁可短一截，也不要留半句话。
+ * 模型拿到「…性器在大衣」这种断句会自己往下脑补，比不写更糟。
+ */
+function sentenceClamp(s, n) {
+    s = flatten(s).replace(/[。．]+$/g, '');
+    if (s.length <= n) return s;
+    const cut = s.slice(0, n);
+    const at = Math.max(
+        cut.lastIndexOf('，'), cut.lastIndexOf('。'),
+        cut.lastIndexOf('；'), cut.lastIndexOf('、'),
+        cut.lastIndexOf(','),
+    );
+    return (at > n * 0.4 ? cut.slice(0, at) : cut).replace(/[，,、；;]$/, '');
 }
 
 /* ---------------- 时间 → 光线 ---------------- */
@@ -97,7 +115,7 @@ function lightFromTime(timeText) {
 /* ---------------- 交互动词 → 构图 ---------------- */
 
 /** 身体接触 / 贴身类：bbox 必须相邻或轻微重叠 */
-const CLOSE_WORDS = /抱|搂|拥|亲|吻|依偎|倚|靠(在|着)|贴(着|近)|牵(着|手)|握(着|住)|扶(着|住)|搭(在|着)|揽|背(着|起)|抱起|坐在.*(腿|怀)|枕|膝|贴面|贴耳|蹭|蹭着|抚摸|摩挲/;
+const CLOSE_WORDS = /抱|搂|拥|亲|吻|依偎|倚|靠(在|着)|贴(着|近|住)|紧贴|牵(着|手)|握(着|住)|扶(着|住)|搭(在|着)|揽|背(着|起)|抱起|坐在.*(腿|怀)|枕|膝|贴面|贴耳|蹭|蹭着|抚摸|摩挲|相连|连在一起|没有分开|黏|粘/;
 /** 并排 / 同行类 */
 const SIDE_WORDS = /并排|并肩|一起走|同行|并肩|一齐|一同|走在|站着|坐在一旁|挨着/;
 /** 对峙 / 分离类 */
@@ -184,6 +202,17 @@ function toBBox(b, w, h) {
 
 /* ---------------- 人物档案 ---------------- */
 
+/** 柏宝书的 desc 经常以角色名开头，caption 里已经有名字了，去掉重复 */
+function stripLeadingName(s, name) {
+    let t = String(s || '').trim();
+    const n = String(name || '').trim();
+    if (!n) return t;
+    for (let i = 0; i < 2; i++) {
+        if (t.startsWith(n)) t = t.slice(n.length).replace(/^[，,、:：\s]+/, '');
+    }
+    return t;
+}
+
 /**
  * cards: { [name]: description }，由宿主从角色卡/人物设定里取
  * 返回 { name, looks, outfit, condition, src }
@@ -197,9 +226,9 @@ function personProfile(name, snap, cards = {}) {
     if (hit) {
         return {
             name: hit.name,
-            looks: clampText(hit.desc || cards[hit.name] || '', 70),
-            outfit: clampText(hit.outfit || '', 30),
-            condition: clampText(hit.condition || '', 24),
+            looks: sentenceClamp(stripLeadingName(hit.desc || cards[hit.name] || '', hit.name), 70),
+            outfit: sentenceClamp(hit.outfit || '', 30),
+            condition: sentenceClamp(hit.condition || '', 24),
             src: hit.desc ? 'npc.desc' : (cards[hit.name] ? '角色卡' : '无'),
         };
     }
@@ -208,9 +237,9 @@ function personProfile(name, snap, cards = {}) {
     const isUser = /^(我|你|user|主角|{{user}})$/i.test(key) || key === '';
     return {
         name: isUser ? '' : key,
-        looks: clampText(p.appearance || cards[key] || cards['__user__'] || '', 70),
-        outfit: clampText(p.outfit || '', 30),
-        condition: clampText(p.condition || '', 24),
+        looks: sentenceClamp(stripLeadingName(p.appearance || cards[key] || cards['__user__'] || '', key), 70),
+        outfit: sentenceClamp(p.outfit || '', 30),
+        condition: sentenceClamp(p.condition || '', 24),
         src: p.appearance ? 'protagonist.appearance' : (cards[key] || cards['__user__'] ? '角色卡/人设' : '无'),
     };
 }
@@ -228,17 +257,17 @@ function sceneDesc(snap) {
     if (path.length) {
         for (let i = path.length - 1; i >= 0; i--) {
             const node = scenes.find(s => s?.name === path[i] && s?.desc);
-            if (node) { out.push(flatten(node.desc)); from = `scenes.${path[i]}.desc`; break; }
+            if (node) { out.push(sentenceClamp(flatten(node.desc), 70)); from = `scenes.${path[i]}.desc`; break; }
         }
         if (!out.length && path.length) { out.push(flatten(path[path.length - 1])); from = 'locationPath'; }
     }
-    if (!out.length && st.location) { out.push(flatten(st.location)); from = 'state.location'; }
+    if (!out.length && st.location) { out.push(sentenceClamp(flatten(st.location), 70)); from = 'state.location'; }
     if (!out.length) {
         const any = scenes.find(s => s?.desc);
-        if (any) { out.push(flatten(any.desc)); from = `scenes.${any.name}.desc`; }
+        if (any) { out.push(sentenceClamp(flatten(any.desc), 70)); from = `scenes.${any.name}.desc`; }
     }
 
-    return { text: clampText(out.join('，'), 60), from };
+    return { text: sentenceClamp(out.join('，'), 60), from };
 }
 
 /* ---------------- 主函数 ---------------- */
@@ -301,7 +330,7 @@ function composeScene(o = {}) {
             i === 0 ? x : x);
         const head = bits.filter(Boolean).join('，');
         const tail = [situation, style].filter(Boolean).join('，');
-        const text = clampText([head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'), 220);
+        const text = sentenceClamp([head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'), 220);
         report.push(`外貌来源: ${p.src}`);
         return { mode: 'single', text, width: 1024, height: 1024, people, report };
     }
@@ -341,13 +370,13 @@ function composeScene(o = {}) {
         if (posOf[i]) parts.push(posOf[i]);
         return {
             label: 'character',
-            caption: clampText(selfOnly(parts.filter(Boolean).join('，')), 90),
+            caption: sentenceClamp(selfOnly(parts.filter(Boolean).join('，')), 90),
             bbox: toBBox(boxes[i], width, height),
         };
     });
 
     const layout = {
-        summary: { caption: clampText(summaryBits.join('，'), 140) },
+        summary: { caption: sentenceClamp(summaryBits.join('，'), 140) },
         items,
         bbox_coord_space: 'abs_centralized',
         bbox_format: 'yxyx',

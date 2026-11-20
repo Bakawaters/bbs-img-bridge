@@ -28,6 +28,36 @@ function flatten(s) {
 }
 
 /**
+ * 标点归一化 —— 只在「中文为主」的文本上做。
+ *
+ * 柏宝书的 location / scene.desc / npc.desc 里经常混着半角逗号（"转角处,绿化带深处…"），
+ * v1.4.0 之前这些字符会原样进 caption。语义上模型能懂，但会带来三个实际麻烦：
+ *   1. 中英标点混排，同一句里出现「，」和「,」两种分隔，Qwen 分词后是两类 token，白白占注意力；
+ *   2. 半角逗号后面常跟空格，中文串里夹空格会被切成额外 token；
+ *   3. 拼接时前一段以「。」结尾、后一段用「，」连，产生「。，」这种双标点。
+ * 英文为主的 caption（比如 ST 的 Prompt Prefix）不碰，否则会把 ", " 变成全角，破坏英文格式。
+ */
+function normalizePunct(s) {
+    const raw = String(s ?? '').replace(/[\u200b-\u200f\ufeff]/g, '');
+    const compact = raw.replace(/\s/g, '');
+    if (!compact) return '';
+    const cjk = (raw.match(/[\u4e00-\u9fff]/g) || []).length;
+    if (cjk < compact.length * 0.35) {
+        // 英文为主：只压多余空白，标点原样
+        return raw.replace(/[ \t\u00a0]{2,}/g, ' ').replace(/[\r\n]+/g, ' ').trim();
+    }
+    return raw
+        .replace(/[ \t\u00a0\u3000]+/g, '')                 // 中文串里不留空格
+        .replace(/,/g, '，').replace(/;/g, '；').replace(/:/g, '：')
+        .replace(/!/g, '！').replace(/\?/g, '？')
+        .replace(/。/g, '，')                                // caption 是一段逗号串联的话，句号统一成逗号
+        .replace(/[，、；：]{2,}/g, m => m[0])               // 「，，」「，、」只留一个
+        .replace(/[（(]\s*[）)]/g, '')                        // 空括号
+        .replace(/^[，、；：]+|[，、；：]+$/g, '')
+        .trim();
+}
+
+/**
  * 单句清洗：去掉这一句里不可画的成分。
  * 注意只洗「句子内部」，不决定留不留这一句 —— 去留由 visualOnly 统一管。
  */
@@ -69,25 +99,20 @@ function selfOnly(s) {
         .trim();
 }
 
-function clampText(s, n) {
-    s = flatten(s);
-    return s.length > n ? s.slice(0, n) : s;
-}
-
 /**
  * 按句读截断：宁可短一截，也不要留半句话。
  * 模型拿到「…性器在大衣」这种断句会自己往下脑补，比不写更糟。
  */
 function sentenceClamp(s, n) {
     s = flatten(s).replace(/[。．]+$/g, '');
-    if (s.length <= n) return s;
+    if (s.length <= n) return normalizePunct(s);
     const cut = s.slice(0, n);
     const at = Math.max(
         cut.lastIndexOf('，'), cut.lastIndexOf('。'),
         cut.lastIndexOf('；'), cut.lastIndexOf('、'),
-        cut.lastIndexOf(','),
+        cut.lastIndexOf(','), cut.lastIndexOf('.'),
     );
-    return (at > n * 0.4 ? cut.slice(0, at) : cut).replace(/[，,、；;]$/, '');
+    return normalizePunct((at > n * 0.4 ? cut.slice(0, at) : cut).replace(/[，,、；;.]$/, ''));
 }
 
 /* ---------------- 时间 → 光线 ---------------- */

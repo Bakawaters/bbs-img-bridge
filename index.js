@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.1.0
+ * 柏宝书 · 场景生图桥接 v1.2.0
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -119,7 +119,7 @@ function lightFromTime(timeText) {
 /* ---------------- 交互动词 → 构图 ---------------- */
 
 /** 身体接触 / 贴身类：bbox 必须相邻或轻微重叠 */
-const CLOSE_WORDS = /抱|搂|拥|亲|吻|依偎|倚|靠(在|着)|贴(着|近|住)|紧贴|牵(着|手)|握(着|住)|扶(着|住)|搭(在|着)|揽|背(着|起)|抱起|坐在.*(腿|怀)|枕|膝|贴面|贴耳|蹭|蹭着|抚摸|摩挲|相连|连在一起|没有分开|黏|粘/;
+const CLOSE_WORDS = /抱|搂|拥|亲|吻|依偎|倚|靠(在|着)|贴(着|近|住)|紧贴|牵(着|手)|握(着|住)|扶(着|住)|搭(在|着)|揽|环(住|绕|抱)|攀|挂在|背(着|起)|抱起|坐在.*(腿|怀)|枕|膝|贴面|贴耳|蹭|蹭着|抚摸|摩挲|相连|连在一起|没有分开|黏|粘/;
 /** 并排 / 同行类 */
 const SIDE_WORDS = /并排|并肩|一起走|同行|并肩|一齐|一同|走在|站着|坐在一旁|挨着/;
 /** 对峙 / 分离类 */
@@ -274,6 +274,30 @@ function sceneDesc(snap) {
     return { text: sentenceClamp(out.join('，'), 60), from };
 }
 
+/* ---------------- 自定义变量里的「画面镜头」 ---------------- */
+
+/**
+ * 柏宝书的内置局势卡 sceneFocus 有「局面实质切换才更新」的门槛，
+ * 很多楼它不会动。所以允许用户在自定义变量里放一个每楼都刷新的画面镜头，
+ * 优先用它，没有才回退到 sceneFocus.situation。
+ *
+ * 认这几种写法：vars.situation = "…" / vars.画面 = "…" /
+ * vars.situation = { text|value|desc|situation: "…" }
+ */
+function pickVarShot(vars) {
+    if (!vars || typeof vars !== 'object' || Array.isArray(vars)) return '';
+    for (const k of ['situation', '画面', '镜头', 'shot', 'visual']) {
+        const v = vars[k];
+        if (typeof v === 'string' && v.trim()) return v;
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+            for (const k2 of ['situation', 'text', 'value', 'desc']) {
+                if (typeof v[k2] === 'string' && v[k2].trim()) return v[k2];
+            }
+        }
+    }
+    return '';
+}
+
 /* ---------------- 主函数 ---------------- */
 
 /**
@@ -296,14 +320,28 @@ function composeScene(o = {}) {
     const st = snap.state || {};
     const sf = st.sceneFocus || {};
 
+    // 0) 局面：自定义变量 situation 优先，回退内置局势卡
+    const varShot = visualOnly(pickVarShot(snap.vars));
+    const builtinShot = visualOnly(sf.situation || '');
+    const situation = varShot || builtinShot;
+    const situationFrom = varShot ? '自定义变量 situation' : (builtinShot ? 'sceneFocus.situation' : '无');
+
     // 1) 谁在场
     let names = Array.isArray(sf.participants) ? sf.participants.map(flatten).filter(Boolean) : [];
     if (!names.length) {
-        const npcs = (snap.npcs || []).filter(n => n?.important || n?.follow);
-        if (npcs.length) names = npcs.slice(0, 1).map(n => n.name);
+        // 局势卡没更新时，从画面镜头/局面的正文里反找名册中的人名
+        const pool = `${situation} ${sceneDesc(snap).text}`;
+        names = (snap.npcs || [])
+            .filter(n => n?.name && pool.includes(n.name))
+            .map(n => n.name);
+        if (names.length) report.push('在场名单来自画面镜头里的人名');
     }
     if (!names.length) {
-        report.push('柏宝书里没有在场人物（sceneFocus.participants 为空，也没有重要/随行 NPC）');
+        const npcs = (snap.npcs || []).filter(n => n?.important || n?.follow);
+        if (npcs.length) names = npcs.slice(0, maxPeople).map(n => n.name);
+    }
+    if (!names.length) {
+        report.push('柏宝书里没有在场人物（sceneFocus.participants 为空，画面镜头里也没出现名册中的人）');
         return { mode: 'none', text: '', width: 1024, height: 1024, people: [], report };
     }
     if (names.length > maxPeople) {
@@ -319,8 +357,7 @@ function composeScene(o = {}) {
     report.push(`场景: ${scene.from}`);
     const light = lightFromTime(st.time);
     report.push(`光线: ${st.time || '无'}`);
-    const situation = visualOnly(sf.situation || '');
-    report.push(`局面: ${situation ? situation.slice(0, 40) : '无'}`);
+    report.push(`局面: ${situation ? situation.slice(0, 36) + '…' : '无'}（${situationFrom}）`);
     const kind = pickInteraction(situation);
     report.push(`构图: ${people.length}人/${kind}`);
 
@@ -618,6 +655,7 @@ async function doRaw() {
     const sf = snap.state?.sceneFocus || null;
     const slim = {
         revision: snap.revision,
+        vars: snap.vars,
         state: { time: snap.state?.time, location: snap.state?.location, locationPath: snap.state?.locationPath, sceneFocus: sf },
         protagonist: snap.protagonist,
         scenes: (snap.scenes || []).slice(0, 3).map(s => ({ name: s.name, desc: s.desc })),

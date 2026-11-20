@@ -182,7 +182,7 @@ async function doGenerate(force = false) {
 /* ---------------- 输出 ---------------- */
 
 function safeEcho(s) {
-    return String(s ?? '').replace(/[|｜]/g, '，').replace(/\{\{/g, '{ {').replace(/[\r\n]+/g, ' ').slice(0, 1600);
+    return String(s ?? '').replace(/[|｜]/g, '，').replace(/\{\{/g, '{ {').replace(/[\r\n]+/g, ' ').slice(0, 4000);
 }
 
 async function echo(text) {
@@ -206,7 +206,10 @@ async function doPreview(verbose) {
         await echo('[bbs-img] ' + built.text);
         await echo('[bbs-img] 命令: ' + sdCommand(built));
     } else {
-        await echo('[bbs-img] ' + built.text.slice(0, 300));
+        // 不写省略号会被当成「提示词被截断了」——它只是预览，完整内容用 preview+
+        const shown = built.text.slice(0, 300);
+        const more = built.text.length > 300 ? `…（预览只显示前 300 字，实际提交 ${built.text.length} 字，看全用 preview+）` : '';
+        await echo('[bbs-img] ' + shown + more);
     }
 
     const sd = ctxOrNull()?.extensionSettings?.sd;

@@ -14,6 +14,7 @@ const CFG = {
 const LS = {
     enabled: 'bbs_img_enabled',
     style: 'bbs_img_style',
+    maxchars: 'bbs_img_maxchars',
     size: 'bbs_img_size',
     people: 'bbs_img_people',
 };
@@ -21,6 +22,7 @@ const LS = {
 const st = {
     enabled: localStorage.getItem(LS.enabled) === 'true',
     style: localStorage.getItem(LS.style),   // null = 没设过，走自动判断
+    summaryMax: Number(localStorage.getItem(LS.maxchars)) || 140,
     size: JSON.parse(localStorage.getItem(LS.size) || 'null') || CFG.sizeMulti,
     maxPeople: Number(localStorage.getItem(LS.people)) || CFG.maxPeople,
     busy: false,
@@ -118,6 +120,7 @@ function buildPrompt() {
         cards,
         style,
         styleFrom: from,
+        summaryMax: st.summaryMax,
         maxPeople: st.maxPeople,
         width: st.size?.w || CFG.sizeMulti.w,
         height: st.size?.h || CFG.sizeMulti.h,
@@ -270,6 +273,7 @@ function register() {
         if (N?.fromProps) {
             for (const [name, description] of [
                 ['style', '画风后缀；auto 回到自动判断'],
+                ['maxchars', '镜头字数上限，默认 140；实测 90-120 最准'],
                 ['people', '最多画几个人 1–3'],
                 ['size', '多人图尺寸，如 1248x832'],
             ]) {
@@ -292,6 +296,12 @@ function register() {
             if (n.style !== undefined) { await setStyle(n.style); touched = true; }
             if (n.people !== undefined) { await setPeople(n.people); touched = true; }
             if (n.size !== undefined) { await setSize(n.size); touched = true; }
+            if (n.maxchars !== undefined) {
+                st.summaryMax = Math.max(60, Math.min(400, Number(String(n.maxchars).match(/\d+/)?.[0]) || 140));
+                localStorage.setItem(LS.maxchars, String(st.summaryMax));
+                await echo(`[bbs-img] 镜头字数上限 ${st.summaryMax}`);
+                touched = true;
+            }
 
             const arg = String(value || '').trim();
             const low = arg.toLowerCase();

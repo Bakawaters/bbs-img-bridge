@@ -158,6 +158,21 @@ ok(r.echoes.join('\n').includes('分段不截断'), 'detail=0 回到不截断（
 r = await run('maxchars-back', snapshots.pair, '', { maxchars: '140' });
 ok(r.echoes.join('\n').includes('镜头字数上限 140'), 'maxchars 可以改回 140');
 
+/* ---- v1.4.5：英文长描述不能被中文正则误伤 ---- */
+const snapEn = {
+    ...snapVarShot,
+    state: { ...snapVarShot.state, sceneFocus: { participants: ['沈砚'] } },
+    vars: { situation: 'Studio photograph of a woman with teal hair (shoulder length). The sign reads "MOSS BOOKS" in gold serif! Lighting: warm tungsten from the right.' },
+};
+r = await run('shot-english', snapEn, 'preview+');
+{
+    const e = r.echoes.join('\n');
+    ok(e.includes('(shoulder length)'), '英文括注不被删');
+    ok(e.includes('"MOSS BOOKS"'), '英文双引号文案不被删');
+    ok(e.includes('serif'), '英文句子完整保留');
+    ok(e.includes('无截断'), '英文长描述原样通过（报告无清洗）');
+}
+
 /* ---- v1.4.0：镜头不能截断、不能只取第一个字段 ---- */
 const snapMulti = {
     ...snapVarShot,

@@ -65,6 +65,20 @@ function normalizePunct(s) {
         .trim();
 }
 
+/**
+ * situation 已经是完整 caption 时，画风只能追加在后缀 —— 前置会破坏「媒介 + 主体」开头。
+ * caption 里已经出现过的画风段就不再重复。
+ */
+function styleTail(situation, style) {
+    const seg = String(style || '').split(/[，,]/).map(x => x.trim()).filter(Boolean);
+    if (!seg.length) return '';
+    const [first, ...others] = seg;
+    const use = String(situation || '').includes(first) ? others : seg;
+    if (!use.length) return '';
+    const sep = isCJKText(situation) ? '，' : ', ';
+    return sep + use.join(sep);
+}
+
 /** 中文为主的文本（≥35% 汉字）—— 用来决定要不要往里面掺中文行为词 */
 function isCJKText(s) {
     const str = String(s ?? '');
@@ -471,7 +485,9 @@ export function composeScene(o = {}) {
         // POV 锚点只在中文镜头上补：英文 caption 由生成它的 prompt 自己负责机位
         const povPre = povMode && full && isCJKText(situation) ? povClause : '';
         const text = sentenceClamp(
-            full ? [povPre, situation].filter(Boolean).join('，') : [medium, povClause, head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'),
+            full
+                ? [povPre, situation].filter(Boolean).join('，') + styleTail(situation, style)
+                : [medium, povClause, head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'),
             totalCap,
         );
         report.push(full ? 'summary: 只用 situation 原文（不再拼外貌/场景/光线/画风）' : `外貌来源: ${p.src}`);
@@ -493,8 +509,8 @@ export function composeScene(o = {}) {
     const [medium, ...styleRest] = String(style || '').split(/[，,]/).map(x => x.trim()).filter(Boolean);
     const summaryBits = [];
     if (situation) {
-        // situation 已是自足的英文 caption，原样用；不再叠画风/场景/光线
-        summaryBits.push(situation);
+        // situation 已是自足的英文 caption，原样用；画风只追加后缀，不叠场景/光线
+        summaryBits.push(situation + styleTail(situation, style));
     } else {
         if (medium) summaryBits.push(medium);
         if (scene.text) summaryBits.push(scene.text);

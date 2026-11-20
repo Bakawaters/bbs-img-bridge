@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.4.1
+ * 柏宝书 · 场景生图桥接 v1.4.4
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.4.1';
+const VERSION = '1.4.4';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -39,6 +39,14 @@ const VERSION = '1.4.1';
  * 眼神是贴图。所以空白默认不是"中性"，是"最差"。三选一实测见文档第 11 节。
  */
 const STYLE_DEFAULT = '写实摄影，浅景深';
+// 各段的「参考字数」（仅在 detail>0 时作为截断基准被乘）。
+// detail 不设 = 0 = 完全不截断，原文有多少字进多少字；想要收窄才自己给倍数。
+const SEG_DEFAULT = { looks: 70, outfit: 30, condition: 24, scene: 70, item: 90 };
+const segCap = (n, k = 0) => {
+    const m = Number(k);
+    if (!(m > 0)) return Infinity;           // 默认：不截断
+    return Math.max(8, Math.round(n * m));
+};
 
 /* ---------------- 通用清洗 ---------------- */
 
@@ -264,7 +272,7 @@ function stripLeadingName(s, name) {
  * cards: { [name]: description }，由宿主从角色卡/人物设定里取
  * 返回 { name, looks, outfit, condition, src }
  */
-function personProfile(name, snap, cards = {}) {
+function personProfile(name, snap, cards = {}, k = 0) {
     const key = String(name ?? '').trim();
     const npcs = snap?.npcs || [];
     const p = snap?.protagonist || {};
@@ -273,9 +281,9 @@ function personProfile(name, snap, cards = {}) {
     if (hit) {
         return {
             name: hit.name,
-            looks: sentenceClamp(stripLeadingName(hit.desc || cards[hit.name] || '', hit.name), 70),
-            outfit: sentenceClamp(hit.outfit || '', 30),
-            condition: sentenceClamp(hit.condition || '', 24),
+            looks: sentenceClamp(stripLeadingName(hit.desc || cards[hit.name] || '', hit.name), segCap(SEG_DEFAULT.looks, k)),
+            outfit: sentenceClamp(hit.outfit || '', segCap(SEG_DEFAULT.outfit, k)),
+            condition: sentenceClamp(hit.condition || '', segCap(SEG_DEFAULT.condition, k)),
             src: hit.desc ? 'npc.desc' : (cards[hit.name] ? '角色卡' : '无'),
         };
     }
@@ -284,37 +292,38 @@ function personProfile(name, snap, cards = {}) {
     const isUser = /^(我|你|user|主角|{{user}})$/i.test(key) || key === '';
     return {
         name: isUser ? '' : key,
-        looks: sentenceClamp(stripLeadingName(p.appearance || cards[key] || cards['__user__'] || '', key), 70),
-        outfit: sentenceClamp(p.outfit || '', 30),
-        condition: sentenceClamp(p.condition || '', 24),
+        looks: sentenceClamp(stripLeadingName(p.appearance || cards[key] || cards['__user__'] || '', key), segCap(SEG_DEFAULT.looks, k)),
+        outfit: sentenceClamp(p.outfit || '', segCap(SEG_DEFAULT.outfit, k)),
+        condition: sentenceClamp(p.condition || '', segCap(SEG_DEFAULT.condition, k)),
         src: p.appearance ? 'protagonist.appearance' : (cards[key] || cards['__user__'] ? '角色卡/人设' : '无'),
     };
 }
 
 /* ---------------- 场景描述 ---------------- */
 
-function sceneDesc(snap) {
+function sceneDesc(snap, k = 0) {
     const st = snap?.state || {};
     const scenes = snap?.scenes || [];
     const out = [];
     let from = '无';
+    const cap = segCap(SEG_DEFAULT.scene, k);
 
     // locationPath 由粗到细，取最细一级有 desc 的
     const path = Array.isArray(st.locationPath) ? st.locationPath : [];
     if (path.length) {
         for (let i = path.length - 1; i >= 0; i--) {
             const node = scenes.find(s => s?.name === path[i] && s?.desc);
-            if (node) { out.push(sentenceClamp(flatten(node.desc), 70)); from = `scenes.${path[i]}.desc`; break; }
+            if (node) { out.push(sentenceClamp(flatten(node.desc), cap)); from = `scenes.${path[i]}.desc`; break; }
         }
         if (!out.length && path.length) { out.push(flatten(path[path.length - 1])); from = 'locationPath'; }
     }
-    if (!out.length && st.location) { out.push(sentenceClamp(flatten(st.location), 70)); from = 'state.location'; }
+    if (!out.length && st.location) { out.push(sentenceClamp(flatten(st.location), cap)); from = 'state.location'; }
     if (!out.length) {
         const any = scenes.find(s => s?.desc);
-        if (any) { out.push(sentenceClamp(flatten(any.desc), 70)); from = `scenes.${any.name}.desc`; }
+        if (any) { out.push(sentenceClamp(flatten(any.desc), cap)); from = `scenes.${any.name}.desc`; }
     }
 
-    return { text: sentenceClamp(out.join('，'), 60), from };
+    return { text: sentenceClamp(out.join('，'), cap), from };
 }
 
 /* ---------------- 自定义变量里的「画面镜头」 ---------------- */
@@ -392,8 +401,14 @@ function composeScene(o = {}) {
     const cards = o.cards || {};
     // style 为空字符串 = 调用方已决定不加画风词（比如 ST 的 Prompt Prefix 已经在管）
     const style = o.style === undefined ? STYLE_DEFAULT : String(o.style || '').trim();
-    // 镜头字数上限：实测单句甜区 90–120 字（文档第十二节），默认 140
-    const sumMaxBase = Math.max(60, Math.min(400, Number(o.summaryMax) || 140));
+    // 镜头字数上限：实测单句甜区 90–120 字（文档第十二节），默认 140。用户设多少就是多少，不压。
+    const sumMaxBase = Math.max(60, Number(o.summaryMax) || 140);
+    // 分段上限倍数：1 = 默认（外貌70/服装30/状态24/场景70/item90），不设上限
+    // 分段截断倍数：0 / 不设 = 不截断（默认），>0 = 按 SEG_DEFAULT 乘
+    const k = (() => {
+        const m = Number(o.detail);
+        return m > 0 ? m : 0;
+    })();
     const maxPeople = Math.max(1, Math.min(3, o.maxPeople || 3));
     const report = [];
     const st = snap.state || {};
@@ -412,13 +427,18 @@ function composeScene(o = {}) {
     }
 
     // 镜头本身超上限时按内容放宽，否则六要素会被 sentenceClamp 砍掉后三条
-    const sumMax = Math.max(sumMaxBase, Math.min(400, situation.length + 60));
+    const sumMax = Math.max(sumMaxBase, situation.length + 60);
+    if (k > 0) {
+        report.push(`分段截断 ×${k}（外貌${segCap(SEG_DEFAULT.looks, k)} 服装${segCap(SEG_DEFAULT.outfit, k)} 状态${segCap(SEG_DEFAULT.condition, k)} 场景${segCap(SEG_DEFAULT.scene, k)} item${segCap(SEG_DEFAULT.item, k)}）`);
+    } else {
+        report.push('分段不截断（外貌/服装/状态/场景/item 原文全进，要收窄用 detail=0.5）');
+    }
 
     // 1) 谁在场
     let names = Array.isArray(sf.participants) ? sf.participants.map(flatten).filter(Boolean) : [];
     if (!names.length) {
         // 局势卡没更新时，从画面镜头/局面的正文里反找名册中的人名
-        const pool = `${situation} ${sceneDesc(snap).text}`;
+        const pool = `${situation} ${sceneDesc(snap, k).text}`;
         names = (snap.npcs || [])
             .filter(n => n?.name && pool.includes(n.name))
             .map(n => n.name);
@@ -438,7 +458,7 @@ function composeScene(o = {}) {
     }
     report.push(`在场: ${names.filter(Boolean).join('/') || '主角'}`);
 
-    let people = names.map(n => personProfile(n, snap, cards));
+    let people = names.map(n => personProfile(n, snap, cards, k));
 
     /*
      * 视角：pov = 第一人称。
@@ -461,7 +481,7 @@ function composeScene(o = {}) {
     }
 
     // 2) 场景 / 光线 / 交互
-    const scene = sceneDesc(snap);
+    const scene = sceneDesc(snap, k);
     report.push(`场景: ${scene.from}`);
     const light = lightFromTime(st.time);
     report.push(`光线: ${st.time || '无'}`);
@@ -487,9 +507,17 @@ function composeScene(o = {}) {
             : '';
         const tail = [situation, ...rest].filter(Boolean).join('，');
         if (o.styleFrom) report.push(`画风: ${style || '不加'}（${o.styleFrom}）`);
-        const text = sentenceClamp([medium, povClause, head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'), 240);
+        // 总长 = 各段可容纳之和；分段不截断时就是不限（Infinity → 原样全发）
+        const totalCap = segCap(SEG_DEFAULT.looks, k) + segCap(SEG_DEFAULT.outfit, k) + segCap(SEG_DEFAULT.condition, k)
+            + segCap(SEG_DEFAULT.scene, k) + sumMax
+            + String(medium || '').length + String(light || '').length + String(povClause || '').length + 20;
+        const text = sentenceClamp([medium, povClause, head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'), totalCap);
         report.push(`外貌来源: ${p.src}`);
-        return { mode: povMode ? 'pov' : 'single', text, width: 1024, height: 1024, people, report };
+        // 字数分解：调大 maxchars 却不见变长时，看这一段就知道是哪一块没料
+        const capText = Number.isFinite(totalCap) ? totalCap : '不限';
+        report.push(`拼接 ${text.length}/${capText} 字（画风${medium ? medium.length : 0} 外貌${head.length} 场景${(scene.text || '').length} 光线${(light || '').length} 镜头${situation.length}）`);
+        if (!head) report.push('外貌为空 —— 角色卡没有这个人的 description，名册 npc.desc 也为空');
+        return { mode: povMode ? 'pov' : 'single', text, width: 1024, height: 1024, people, report, cap: totalCap };
     }
 
     // 4) 多人：layout JSON
@@ -532,7 +560,7 @@ function composeScene(o = {}) {
         if (posOf[i]) parts.push(posOf[i]);
         return {
             label: 'character',
-            caption: sentenceClamp(selfOnly(parts.filter(Boolean).join('，')), 90),
+            caption: sentenceClamp(selfOnly(parts.filter(Boolean).join('，')), segCap(SEG_DEFAULT.item, k)),
             bbox: toBBox(boxes[i], width, height),
         };
     });
@@ -545,9 +573,10 @@ function composeScene(o = {}) {
     };
     const text = JSON.stringify(layout, null, 0);
     report.push(`外貌来源: ${people.map(p => p.src).join(' / ')}`);
+    report.push(`summary ${layout.summary.caption.length}/${sumMax} 字`);
     report.push(`提示词 ${text.length} 字`);
 
-    return { mode: 'layout', text, width, height, people, report, layout };
+    return { mode: 'layout', text, width, height, people, report, layout, cap: sumMax };
 }
 
 
@@ -568,6 +597,7 @@ const LS = {
     enabled: 'bbs_img_enabled',
     style: 'bbs_img_style',
     maxchars: 'bbs_img_maxchars',
+    detail: 'bbs_img_detail',
     size: 'bbs_img_size',
     people: 'bbs_img_people',
     view: 'bbs_img_view',
@@ -578,6 +608,12 @@ const st = {
     style: localStorage.getItem(LS.style),   // null = 没设过，走自动判断
     view: localStorage.getItem(LS.view) || 'auto',   // auto | pov | two
     summaryMax: Number(localStorage.getItem(LS.maxchars)) || 140,
+    detail: (() => {
+        const raw = localStorage.getItem(LS.detail);
+        if (raw === null) return 0;            // 默认 0 = 分段不截断
+        const m = Number(raw);
+        return m > 0 ? m : 0;
+    })(),
     size: JSON.parse(localStorage.getItem(LS.size) || 'null') || CFG.sizeMulti,
     maxPeople: Number(localStorage.getItem(LS.people)) || CFG.maxPeople,
     busy: false,
@@ -678,6 +714,7 @@ function buildPrompt() {
         view: st.view,
         userName: ctxOrNull()?.name1 || '',
         summaryMax: st.summaryMax,
+        detail: st.detail,
         maxPeople: st.maxPeople,
         width: st.size?.w || CFG.sizeMulti.w,
         height: st.size?.h || CFG.sizeMulti.h,
@@ -754,7 +791,13 @@ async function doPreview(verbose) {
     await echo('[bbs-img] ' + (built.report || []).join(' | '));
     if (!built.ok) { await echo('[bbs-img] ' + built.reason); return; }
 
-    await echo(`[bbs-img] ${built.mode} ${built.width}x${built.height}，提示词 ${built.text.length} 字`);
+    const one = built.mode === 'single' || built.mode === 'pov';
+    const cap = built.cap || st.summaryMax;
+    // maxchars 是天花板不是目标：内容不够就写不满，得靠 situation/场景/外貌 加料
+    const shortNote = one && Number.isFinite(cap) && built.text.length < cap * 0.7
+        ? `（上限 ${cap} 字，没写满：长度由 situation / 场景 / 外貌的内容量决定，调大上限不会让提示词变长）`
+        : '';
+    await echo(`[bbs-img] ${built.mode} ${built.width}x${built.height}，提示词 ${built.text.length} 字${shortNote}`);
     if (verbose) {
         await echo('[bbs-img] ' + built.text);
         await echo('[bbs-img] 命令: ' + sdCommand(built));
@@ -824,6 +867,20 @@ function register() {
         localStorage.setItem(LS.people, String(st.maxPeople));
         await echo(`[bbs-img] 最多画 ${st.maxPeople} 人`);
     };
+    const setMaxchars = async (v) => {
+        const asked = Number(String(v).match(/\d+/)?.[0]) || 140;
+        st.summaryMax = Math.max(60, asked);   // 只有下限，没有上限
+        localStorage.setItem(LS.maxchars, String(st.summaryMax));
+        await echo(`[bbs-img] 镜头字数上限 ${st.summaryMax}`);
+    };
+    const setDetail = async (v) => {
+        const m = Number(String(v).replace(/[^\d.]/g, ''));
+        if (!Number.isFinite(m)) { await echo('[bbs-img] detail= 后面要跟倍数，比如 0.5；0 或 auto = 不截断'); return; }
+        st.detail = m > 0 ? m : 0;
+        localStorage.setItem(LS.detail, String(st.detail));
+        if (!st.detail) { await echo('[bbs-img] 分段不截断：外貌/服装/状态/场景/item 原文有多少字进多少字'); return; }
+        await echo(`[bbs-img] 分段截断 ×${st.detail}：外貌 ${Math.round(70 * st.detail)} / 服装 ${Math.round(30 * st.detail)} / 状态 ${Math.round(24 * st.detail)} / 场景 ${Math.round(70 * st.detail)} / item ${Math.round(90 * st.detail)}`);
+    };
     const setSize = async (v) => {
         const m = String(v).match(/(\d+)\s*[xX*]\s*(\d+)/);
         if (!m) { await echo('[bbs-img] size= 要写成 1248x832 这样'); return; }
@@ -844,7 +901,8 @@ function register() {
             for (const [name, description] of [
                 ['style', '画风后缀；auto 回到自动判断'],
                 ['view', '视角：auto 自动 / pov 第一人称 / two 双人同框'],
-                ['maxchars', '镜头字数上限，默认 140；实测 90-120 最准'],
+                ['maxchars', '镜头字数上限，默认 140；实测 90-120 最准（不设上限，填多少就是多少）'],
+                ['detail', '分段截断倍数；不填=不截断，0.5=收一半，2=放宽一倍'],
                 ['people', '最多画几个人 1–3'],
                 ['size', '多人图尺寸，如 1248x832'],
             ]) {
@@ -868,12 +926,8 @@ function register() {
             if (n.view !== undefined) { await setView(n.view); touched = true; }
             if (n.people !== undefined) { await setPeople(n.people); touched = true; }
             if (n.size !== undefined) { await setSize(n.size); touched = true; }
-            if (n.maxchars !== undefined) {
-                st.summaryMax = Math.max(60, Math.min(400, Number(String(n.maxchars).match(/\d+/)?.[0]) || 140));
-                localStorage.setItem(LS.maxchars, String(st.summaryMax));
-                await echo(`[bbs-img] 镜头字数上限 ${st.summaryMax}`);
-                touched = true;
-            }
+            if (n.detail !== undefined) { await setDetail(n.detail); touched = true; }
+            if (n.maxchars !== undefined) { await setMaxchars(n.maxchars); touched = true; }
 
             const arg = String(value || '').trim();
             const low = arg.toLowerCase();
@@ -907,6 +961,12 @@ function register() {
 
             const mSize = arg.match(/size=(\d+)x(\d+)/i);
             if (mSize) { await setSize(`${mSize[1]}x${mSize[2]}`); return ''; }
+
+            const mDetail = arg.match(/detail=(\d+(?:\.\d+)?)/i);
+            if (mDetail) { await setDetail(mDetail[1]); return ''; }
+
+            const mMaxchars = arg.match(/maxchars=(\d+)/i);
+            if (mMaxchars) { await setMaxchars(mMaxchars[1]); return ''; }
 
             if (!arg && touched) return '';   // 只设参数，不出图
 

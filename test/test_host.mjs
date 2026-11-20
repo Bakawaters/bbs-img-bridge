@@ -110,6 +110,15 @@ r = await run('style-used', snapshots.pair, 'preview+');
 ok(r.echoes.join('\n').includes('画风: 动漫插画，赛璐璐上色（手动设置）'), '设置了 style 后 preview 显示手动来源');
 ok(r.echoes.join('\n').includes('赛璐璐上色'), '有 situation 时画风追加到单图提示词里');
 
+/* ---- v1.4.13：画风带空格被 ST 截断成两段 ---- */
+r = await run('style-space', snapshots.pair, 'char', { style: 'anima' });
+{
+    const e = r.echoes.join('\n');
+    ok(e.includes('画风固定为：anima char'), '画风带空格时把剩余词并回画风');
+    ok(r.commands.length === 0, '被截断的尾词不再触发出图');
+}
+r = await run('style-space-reset', snapshots.pair, '', { style: '动漫插画，赛璐璐上色' });
+
 /* ---- v1.4.10：caption 自带的媒介必须被用户画风顶掉 ---- */
 const snapMedium = {
     ...snapshots.pair,

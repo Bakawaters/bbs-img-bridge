@@ -495,6 +495,18 @@ export function composeScene(o = {}) {
     if (scene.text) baseParts.push(scene.text);
     if (light) baseParts.push(light);
 
+    /*
+     * 不带 bbox：整段文本直接提交，位置全靠模型自己排。
+     * 画布尺寸按人数给（多人用宽幅），但不再给任何坐标。
+     */
+    if (o.bbox === false && situation) {
+        const w = people.length > 1 ? (o.width || 1248) : 1024;
+        const h = people.length > 1 ? (o.height || 832) : 1024;
+        const text = applyStyle(situation, style, o.styleFrom === '手动设置');
+        report.push(`不走 bbox：${people.length} 人全靠模型自己排位（无坐标可依）`);
+        return { mode: 'nl', text, width: w, height: h, people, report, cap: Infinity };
+    }
+
     if (people.length === 1) {
         const p = people[0];
         const bits = [p.looks, p.outfit, p.condition].filter(Boolean).map((x, i) =>

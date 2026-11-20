@@ -119,6 +119,18 @@ r = await run('style-space', snapshots.pair, 'char', { style: 'anima' });
 }
 r = await run('style-space-reset', snapshots.pair, '', { style: '动漫插画，赛璐璐上色' });
 
+/* ---- v1.4.15：bbox=off 走纯自然语言 ---- */
+r = await run('bbox-off', snapshots.pair, 'bbox=off');
+ok(r.echoes.join('\n').includes('不带 bbox'), 'bbox=off 生效');
+r = await run('bbox-off-preview', snapshots.pair, 'preview+');
+{
+    const e = r.echoes.join('\n');
+    ok(e.includes('不走 bbox'), '预览报告写明不走 bbox');
+    ok(!e.includes('"bbox_coord_space"'), '纯自然语言里没有坐标 JSON');
+}
+r = await run('bbox-on', snapshots.pair, 'bbox=on');
+ok(r.echoes.join('\n').includes('带 bbox'), 'bbox=on 可复位');
+
 /* ---- v1.4.10：caption 自带的媒介必须被用户画风顶掉 ---- */
 const snapMedium = {
     ...snapshots.pair,

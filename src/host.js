@@ -15,6 +15,7 @@ const LS = {
     enabled: 'bbs_img_enabled',
     style: 'bbs_img_style',
     maxchars: 'bbs_img_maxchars',
+    detail: 'bbs_img_detail',
     size: 'bbs_img_size',
     people: 'bbs_img_people',
     view: 'bbs_img_view',
@@ -25,6 +26,12 @@ const st = {
     style: localStorage.getItem(LS.style),   // null = 没设过，走自动判断
     view: localStorage.getItem(LS.view) || 'auto',   // auto | pov | two
     summaryMax: Number(localStorage.getItem(LS.maxchars)) || 140,
+    detail: (() => {
+        const raw = localStorage.getItem(LS.detail);
+        if (raw === null) return 0;            // 默认 0 = 分段不截断
+        const m = Number(raw);
+        return m > 0 ? m : 0;
+    })(),
     size: JSON.parse(localStorage.getItem(LS.size) || 'null') || CFG.sizeMulti,
     maxPeople: Number(localStorage.getItem(LS.people)) || CFG.maxPeople,
     busy: false,
@@ -125,6 +132,7 @@ function buildPrompt() {
         view: st.view,
         userName: ctxOrNull()?.name1 || '',
         summaryMax: st.summaryMax,
+        detail: st.detail,
         maxPeople: st.maxPeople,
         width: st.size?.w || CFG.sizeMulti.w,
         height: st.size?.h || CFG.sizeMulti.h,
@@ -201,7 +209,13 @@ async function doPreview(verbose) {
     await echo('[bbs-img] ' + (built.report || []).join(' | '));
     if (!built.ok) { await echo('[bbs-img] ' + built.reason); return; }
 
-    await echo(`[bbs-img] ${built.mode} ${built.width}x${built.height}，提示词 ${built.text.length} 字`);
+    const one = built.mode === 'single' || built.mode === 'pov';
+    const cap = built.cap || st.summaryMax;
+    // maxchars 是天花板不是目标：内容不够就写不满，得靠 situation/场景/外貌 加料
+    const shortNote = one && Number.isFinite(cap) && built.text.length < cap * 0.7
+        ? `（上限 ${cap} 字，没写满：长度由 situation / 场景 / 外貌的内容量决定，调大上限不会让提示词变长）`
+        : '';
+    await echo(`[bbs-img] ${built.mode} ${built.width}x${built.height}，提示词 ${built.text.length} 字${shortNote}`);
     if (verbose) {
         await echo('[bbs-img] ' + built.text);
         await echo('[bbs-img] 命令: ' + sdCommand(built));
@@ -271,6 +285,20 @@ function register() {
         localStorage.setItem(LS.people, String(st.maxPeople));
         await echo(`[bbs-img] 最多画 ${st.maxPeople} 人`);
     };
+    const setMaxchars = async (v) => {
+        const asked = Number(String(v).match(/\d+/)?.[0]) || 140;
+        st.summaryMax = Math.max(60, asked);   // 只有下限，没有上限
+        localStorage.setItem(LS.maxchars, String(st.summaryMax));
+        await echo(`[bbs-img] 镜头字数上限 ${st.summaryMax}`);
+    };
+    const setDetail = async (v) => {
+        const m = Number(String(v).replace(/[^\d.]/g, ''));
+        if (!Number.isFinite(m)) { await echo('[bbs-img] detail= 后面要跟倍数，比如 0.5；0 或 auto = 不截断'); return; }
+        st.detail = m > 0 ? m : 0;
+        localStorage.setItem(LS.detail, String(st.detail));
+        if (!st.detail) { await echo('[bbs-img] 分段不截断：外貌/服装/状态/场景/item 原文有多少字进多少字'); return; }
+        await echo(`[bbs-img] 分段截断 ×${st.detail}：外貌 ${Math.round(70 * st.detail)} / 服装 ${Math.round(30 * st.detail)} / 状态 ${Math.round(24 * st.detail)} / 场景 ${Math.round(70 * st.detail)} / item ${Math.round(90 * st.detail)}`);
+    };
     const setSize = async (v) => {
         const m = String(v).match(/(\d+)\s*[xX*]\s*(\d+)/);
         if (!m) { await echo('[bbs-img] size= 要写成 1248x832 这样'); return; }
@@ -291,7 +319,8 @@ function register() {
             for (const [name, description] of [
                 ['style', '画风后缀；auto 回到自动判断'],
                 ['view', '视角：auto 自动 / pov 第一人称 / two 双人同框'],
-                ['maxchars', '镜头字数上限，默认 140；实测 90-120 最准'],
+                ['maxchars', '镜头字数上限，默认 140；实测 90-120 最准（不设上限，填多少就是多少）'],
+                ['detail', '分段截断倍数；不填=不截断，0.5=收一半，2=放宽一倍'],
                 ['people', '最多画几个人 1–3'],
                 ['size', '多人图尺寸，如 1248x832'],
             ]) {
@@ -315,12 +344,8 @@ function register() {
             if (n.view !== undefined) { await setView(n.view); touched = true; }
             if (n.people !== undefined) { await setPeople(n.people); touched = true; }
             if (n.size !== undefined) { await setSize(n.size); touched = true; }
-            if (n.maxchars !== undefined) {
-                st.summaryMax = Math.max(60, Math.min(400, Number(String(n.maxchars).match(/\d+/)?.[0]) || 140));
-                localStorage.setItem(LS.maxchars, String(st.summaryMax));
-                await echo(`[bbs-img] 镜头字数上限 ${st.summaryMax}`);
-                touched = true;
-            }
+            if (n.detail !== undefined) { await setDetail(n.detail); touched = true; }
+            if (n.maxchars !== undefined) { await setMaxchars(n.maxchars); touched = true; }
 
             const arg = String(value || '').trim();
             const low = arg.toLowerCase();
@@ -354,6 +379,12 @@ function register() {
 
             const mSize = arg.match(/size=(\d+)x(\d+)/i);
             if (mSize) { await setSize(`${mSize[1]}x${mSize[2]}`); return ''; }
+
+            const mDetail = arg.match(/detail=(\d+(?:\.\d+)?)/i);
+            if (mDetail) { await setDetail(mDetail[1]); return ''; }
+
+            const mMaxchars = arg.match(/maxchars=(\d+)/i);
+            if (mMaxchars) { await setMaxchars(mMaxchars[1]); return ''; }
 
             if (!arg && touched) return '';   // 只设参数，不出图
 

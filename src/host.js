@@ -17,11 +17,13 @@ const LS = {
     maxchars: 'bbs_img_maxchars',
     size: 'bbs_img_size',
     people: 'bbs_img_people',
+    view: 'bbs_img_view',
 };
 
 const st = {
     enabled: localStorage.getItem(LS.enabled) === 'true',
     style: localStorage.getItem(LS.style),   // null = 没设过，走自动判断
+    view: localStorage.getItem(LS.view) || 'auto',   // auto | pov | two
     summaryMax: Number(localStorage.getItem(LS.maxchars)) || 140,
     size: JSON.parse(localStorage.getItem(LS.size) || 'null') || CFG.sizeMulti,
     maxPeople: Number(localStorage.getItem(LS.people)) || CFG.maxPeople,
@@ -120,6 +122,8 @@ function buildPrompt() {
         cards,
         style,
         styleFrom: from,
+        view: st.view,
+        userName: ctxOrNull()?.name1 || '',
         summaryMax: st.summaryMax,
         maxPeople: st.maxPeople,
         width: st.size?.w || CFG.sizeMulti.w,
@@ -247,6 +251,16 @@ function register() {
             await echo(`[bbs-img] 画风固定为：${st.style}`);
         }
     };
+    const setView = async (v) => {
+        const t = String(v ?? '').trim().toLowerCase();
+        let mode = 'auto';
+        if (/^(pov|first|1st|第一人称)$/.test(t)) mode = 'pov';
+        else if (/^(two|双人|多人|三人称|第三)$/.test(t)) mode = 'two';
+        else if (!/^(auto|默认|自动)$/.test(t) && t) { await echo('[bbs-img] view= 只认 auto / pov / two'); return; }
+        st.view = mode;
+        localStorage.setItem(LS.view, mode);
+        await echo(`[bbs-img] 视角：${{ auto: '自动（镜头里写第一人称才走 pov）', pov: '固定第一人称，画面只画对方', two: '固定双人同框' }[mode]}`);
+    };
     const setPeople = async (v) => {
         const n = Number(String(v).match(/\d/)?.[0]);
         if (!n) { await echo('[bbs-img] people= 后面要跟数字 1–3'); return; }
@@ -273,6 +287,7 @@ function register() {
         if (N?.fromProps) {
             for (const [name, description] of [
                 ['style', '画风后缀；auto 回到自动判断'],
+                ['view', '视角：auto 自动 / pov 第一人称 / two 双人同框'],
                 ['maxchars', '镜头字数上限，默认 140；实测 90-120 最准'],
                 ['people', '最多画几个人 1–3'],
                 ['size', '多人图尺寸，如 1248x832'],
@@ -294,6 +309,7 @@ function register() {
             const n = named || {};
             let touched = false;
             if (n.style !== undefined) { await setStyle(n.style); touched = true; }
+            if (n.view !== undefined) { await setView(n.view); touched = true; }
             if (n.people !== undefined) { await setPeople(n.people); touched = true; }
             if (n.size !== undefined) { await setSize(n.size); touched = true; }
             if (n.maxchars !== undefined) {
@@ -327,6 +343,9 @@ function register() {
             const mStyle = arg.match(/style=(.*)$/i);
             if (mStyle) { await setStyle(mStyle[1]); return ''; }
 
+            const mView = arg.match(/view=(auto|pov|two|第一人称|双人)/i);
+            if (mView) { await setView(mView[1]); return ''; }
+
             const mPeople = arg.match(/people=(\d)/i);
             if (mPeople) { await setPeople(mPeople[1]); return ''; }
 
@@ -339,7 +358,7 @@ function register() {
             if (!r.ok && r.reason !== 'duplicate') await echo(`[bbs-img] ${r.reason}`);
             return '';
         },
-        helpString: '/bbs-img 出图 · preview 看字段来源 · preview+ 看完整提示词 · raw 看快照 · rawcmd 看提交命令 · on/off 自动 · style= 画风 · people=3 · size=1248x832 · reset',
+        helpString: '/bbs-img 出图 · preview 看字段来源 · preview+ 看完整提示词 · raw 看快照 · rawcmd 看提交命令 · on/off 自动 · style= 画风 · view=pov 第一人称 · people=3 · size=1248x832 · reset',
     }));
 
     try {

@@ -5,7 +5,7 @@
   "optional": [],
   "js": "index.js",
   "author": "Bakawaters",
-  "version": "1.4.12",
+  "version": "1.4.13",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

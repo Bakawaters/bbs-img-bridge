@@ -170,7 +170,7 @@ r = await run('shot-english', snapEn, 'preview+');
     ok(e.includes('(shoulder length)'), '英文括注不被删');
     ok(e.includes('"MOSS BOOKS"'), '英文双引号文案不被删');
     ok(e.includes('serif'), '英文句子完整保留');
-    ok(e.includes('无截断'), '英文长描述原样通过（报告无清洗）');
+    ok(e.includes('原样使用'), '英文长描述原样通过（报告显示原样使用）');
 }
 
 /* ---- v1.4.0：镜头不能截断、不能只取第一个字段 ---- */
@@ -182,7 +182,7 @@ r = await run('shot-multi-sentence', snapMulti, 'preview+');
 const mt = r.echoes.join('\n');
 ok(mt.includes('沈砚侧头看她'), '多句镜头保留到最后一句（不再只取第一句）');
 ok(mt.includes('重心落在右腿'), '多句镜头中间句没丢');
-ok(mt.includes('无截断'), '报告写明镜头无截断');
+ok(mt.includes('原样使用'), '报告写明镜头原样使用');
 
 const snapObj = {
     ...snapVarShot,

@@ -519,9 +519,12 @@ export function composeScene(o = {}) {
     const items = people.map((p, i) => {
         const parts = [];
         if (p.name) parts.push(p.name);
-        if (p.looks) parts.push(p.looks);
-        if (p.outfit) parts.push(p.outfit);
-        if (p.condition) parts.push(p.condition);
+        // 有 situation 时不再放名册外貌/服装/状态：caption 里已经描述过，重复只会打架
+        if (!situation) {
+            if (p.looks) parts.push(p.looks);
+            if (p.outfit) parts.push(p.outfit);
+            if (p.condition) parts.push(p.condition);
+        }
         // 只写本人：朝向 + 方位，绝不复述对方的动作
         const face = facing[p.name || (i === 0 ? '#0' : '#1')];
         if (face) parts.push(face);
@@ -542,6 +545,7 @@ export function composeScene(o = {}) {
     const text = JSON.stringify(layout, null, 0);
     report.push(`外貌来源: ${people.map(p => p.src).join(' / ')}`);
     report.push(`summary ${layout.summary.caption.length}/${sumMax} 字（${situation ? 'situation 原文' : '画风+场景+光线拼接'}）`);
+    report.push(situation ? 'items: 姓名+朝向+方位（外貌/服装不再重复）' : 'items: 姓名+外貌+服装+状态+朝向+方位');
     report.push(`提示词 ${text.length} 字`);
 
     return { mode: 'layout', text, width, height, people, report, layout, cap: sumMax };

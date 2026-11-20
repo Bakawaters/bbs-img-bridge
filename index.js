@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.4.10
+ * 柏宝书 · 场景生图桥接 v1.4.11
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.4.10';
+const VERSION = '1.4.11';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -820,9 +820,11 @@ async function doPreview(verbose) {
         await echo('[bbs-img] ' + built.text);
         await echo('[bbs-img] 命令: ' + sdCommand(built));
     } else {
-        // 不写省略号会被当成「提示词被截断了」——它只是预览，完整内容用 preview+
-        const shown = built.text.slice(0, 300);
-        const more = built.text.length > 300 ? `…（预览只显示前 300 字，实际提交 ${built.text.length} 字，看全用 preview+）` : '';
+        // 头 200 + 尾 120：画风这类追加在后缀的词，只显示开头会让人以为没生效
+        const head = built.text.slice(0, 200);
+        const tail = built.text.slice(-120);
+        const shown = built.text.length > 320 ? `${head}……${tail}` : built.text;
+        const more = built.text.length > 320 ? `（预览显示首尾，实际提交 ${built.text.length} 字，看全用 preview+）` : '';
         await echo('[bbs-img] ' + shown + more);
     }
 

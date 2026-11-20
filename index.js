@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.4.6
+ * 柏宝书 · 场景生图桥接 v1.4.7
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.4.6';
+const VERSION = '1.4.7';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -82,6 +82,14 @@ function normalizePunct(s) {
         .replace(/[（(]\s*[）)]/g, '')                        // 空括号
         .replace(/^[，、；：]+|[，、；：]+$/g, '')
         .trim();
+}
+
+/** 中文为主的文本（≥35% 汉字）—— 用来决定要不要往里面掺中文行为词 */
+function isCJKText(s) {
+    const str = String(s ?? '');
+    const compact = str.replace(/\s/g, '');
+    if (!compact) return false;
+    return (str.match(/[\u4e00-\u9fff]/g) || []).length >= compact.length * 0.35;
 }
 
 /** item.caption 禁止出现指代别人的短语，否则模型会多画一个人 */
@@ -476,12 +484,22 @@ function composeScene(o = {}) {
         const totalCap = segCap(SEG_DEFAULT.looks, k) + segCap(SEG_DEFAULT.outfit, k) + segCap(SEG_DEFAULT.condition, k)
             + segCap(SEG_DEFAULT.scene, k) + sumMax
             + String(medium || '').length + String(light || '').length + String(povClause || '').length + 20;
-        const text = sentenceClamp([medium, povClause, head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'), totalCap);
-        report.push(`外貌来源: ${p.src}`);
+        // 有 situation 就只用它：它已经是一段自足的 caption（外貌/场景/光线/画风都在里面），
+        // 再拼中文段落只会变成「亚麻色长卷发，夜晚暖色灯光，Studio photograph of ...」这种混排。
+        const full = !!situation;
+        // POV 锚点只在中文镜头上补：英文 caption 由生成它的 prompt 自己负责机位
+        const povPre = povMode && full && isCJKText(situation) ? povClause : '';
+        const text = sentenceClamp(
+            full ? [povPre, situation].filter(Boolean).join('，') : [medium, povClause, head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'),
+            totalCap,
+        );
+        report.push(full ? 'summary: 只用 situation 原文（不再拼外貌/场景/光线/画风）' : `外貌来源: ${p.src}`);
         // 字数分解：调大 maxchars 却不见变长时，看这一段就知道是哪一块没料
         const capText = Number.isFinite(totalCap) ? totalCap : '不限';
-        report.push(`拼接 ${text.length}/${capText} 字（画风${medium ? medium.length : 0} 外貌${head.length} 场景${(scene.text || '').length} 光线${(light || '').length} 镜头${situation.length}）`);
-        if (!head) report.push('外貌为空 —— 角色卡没有这个人的 description，名册 npc.desc 也为空');
+        report.push(full
+            ? `拼接 ${text.length}/${capText} 字（situation ${situation.length}）`
+            : `拼接 ${text.length}/${capText} 字（画风${medium ? medium.length : 0} 外貌${head.length} 场景${(scene.text || '').length} 光线${(light || '').length} 镜头${situation.length}）`);
+        if (!full && !head) report.push('外貌为空 —— 角色卡没有这个人的 description，名册 npc.desc 也为空');
         return { mode: povMode ? 'pov' : 'single', text, width: 1024, height: 1024, people, report, cap: totalCap };
     }
 
@@ -493,11 +511,15 @@ function composeScene(o = {}) {
     // 不能以动词或动作开头。画风词里逗号前那段当媒介,后面的当尾缀。
     const [medium, ...styleRest] = String(style || '').split(/[，,]/).map(x => x.trim()).filter(Boolean);
     const summaryBits = [];
-    if (medium) summaryBits.push(medium);
-    if (situation) summaryBits.push(situation);
-    if (scene.text) summaryBits.push(scene.text);
-    if (light) summaryBits.push(light);
-    if (styleRest.length) summaryBits.push(styleRest.join('，'));
+    if (situation) {
+        // situation 已是自足的英文 caption，原样用；不再叠画风/场景/光线
+        summaryBits.push(situation);
+    } else {
+        if (medium) summaryBits.push(medium);
+        if (scene.text) summaryBits.push(scene.text);
+        if (light) summaryBits.push(light);
+        if (styleRest.length) summaryBits.push(styleRest.join('，'));
+    }
     if (o.styleFrom) report.push(`画风: ${style || '不加'}（${o.styleFrom}）`);
 
     const boxes = layoutFor(people.length, kind);
@@ -538,7 +560,7 @@ function composeScene(o = {}) {
     };
     const text = JSON.stringify(layout, null, 0);
     report.push(`外貌来源: ${people.map(p => p.src).join(' / ')}`);
-    report.push(`summary ${layout.summary.caption.length}/${sumMax} 字`);
+    report.push(`summary ${layout.summary.caption.length}/${sumMax} 字（${situation ? 'situation 原文' : '画风+场景+光线拼接'}）`);
     report.push(`提示词 ${text.length} 字`);
 
     return { mode: 'layout', text, width, height, people, report, layout, cap: sumMax };

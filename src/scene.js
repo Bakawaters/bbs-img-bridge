@@ -65,51 +65,9 @@ function normalizePunct(s) {
         .trim();
 }
 
-/**
- * 单句清洗：去掉这一句里不可画的成分。
- * 注意只洗「句子内部」，不决定留不留这一句 —— 去留由 visualOnly 统一管。
- */
-function cleanOneSentence(s) {
-    return String(s ?? '')
-        .replace(/[（(][^）)]*[）)]/g, '')                      // 成对的括注
-        .replace(/[（(][^）)]*$/, '')                           // 没闭合的括注：连同后半句一起丢
-        .replace(/(她|他|它|对方|两人|二人)(心里|心中|暗自|似乎|好像|可能|觉得|感到|想着|打算|决定|犹豫)/g, '')
-        .replace(/(想要|准备|打算|试图|企图|好像要|似乎要|可能会)/g, '')
-        .replace(/[「」“”"'’]/g, '')
-        .replace(/[|｜{}]/g, '，')
-        // 「动作：」「地点:」这类字段名前缀，镜头按字段写时要去掉，否则进提示词是噪声
-        .replace(/^[\u4e00-\u9fa5A-Za-z]{1,6}\s*[:：]\s*/, '')
-        .replace(/，{2,}/g, '，')
-        .replace(/^[，、\s]+|[，、；;．。\s]+$/g, '')
-        .trim();
-}
-
-/**
- * 去掉叙事里不可画的东西：心理活动、因果、将来时、选项。
- *
- * v1.4.0 起**不再「只取第一句」**。原来的 `.split(/[。；;]/)[0]` 会从第一个
- * 句号处把整段砍掉：镜头按「朝向。手。相对位置。接触」分句写时，后三句全丢，
- * 这就是「字段没发送出去 / 只剩半句」的主因。现在改成逐句清洗、全部保留。
- *
- * v1.4.5：**非中文输出直接放行**。规则全是中文词（她心里/打算/「」/动作：），
- * 对英文长描述一次也命中不了，反而会误伤它最在意的东西 ——
- * 删掉 (括注)、删掉 "双引号文案"、把 ! 换成全角逗号。
- */
-function visualOnly(s) {
-    const raw = flatten(s);
-    const compact = raw.replace(/\s/g, '');
-    const cjk = (raw.match(/[\u4e00-\u9fff]/g) || []).length;
-    if (!compact || cjk < compact.length * 0.35) return raw;   // 英文/混合：原样通过
-    return raw
-        .split(/[。；;！？!?]/)
-        .map(cleanOneSentence)
-        .filter(x => x.length >= 2)                            // 洗完变空的句子才丢
-        .join('，');
-}
-
 /** item.caption 禁止出现指代别人的短语，否则模型会多画一个人 */
 function selfOnly(s) {
-    return visualOnly(s)
+    return flatten(s)
         .replace(/(旁边|身边|对面|前面|后面|另一个|另一位|对方|她|他)的/g, '')
         .replace(/(抱住|搂住|抱住|牵住|扶住|按住|靠住)(旁边|身边)?(女性|男性|女孩|男孩|人)?的?(腰|肩|手|头|脸|手臂)/g, (m, v, _a, _b, part) => `${v}${part}`)
         .trim();
@@ -405,14 +363,13 @@ export function composeScene(o = {}) {
 
     // 0) 局面：自定义变量 situation 优先，回退内置局势卡
     const shot = pickShot(snap.vars);
-    const varShot = visualOnly(shot.text);
-    const builtinShot = visualOnly(sf.situation || '');
+    const varShot = flatten(shot.text);
+    const builtinShot = flatten(sf.situation || '');
     const situation = varShot || builtinShot;
     const situationFrom = varShot ? `自定义变量 ${shot.from.replace(/^vars\./, '')}` : (builtinShot ? 'sceneFocus.situation' : '');
     if (situationFrom) {
-        const lost = shot.text ? shot.text.length - varShot.length : 0;
         const fld = shot.fields ? `${shot.fields} 个字段，` : '';
-        report.push(`镜头: ${situationFrom}（${fld}原 ${shot.text.length || builtinShot.length} 字${lost > 3 ? `，清洗掉 ${lost} 字` : '，无截断'}）`);
+        report.push(`镜头: ${situationFrom}（${fld}原 ${shot.text.length || builtinShot.length} 字，原样使用）`);
     }
 
     // 镜头本身超上限时按内容放宽，否则六要素会被 sentenceClamp 砍掉后三条

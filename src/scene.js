@@ -27,20 +27,38 @@ function flatten(s) {
     return String(s ?? '').replace(/[\r\n]+/g, '，').replace(/\s+/g, ' ').trim();
 }
 
-/** 去掉叙事里不可画的东西：心理活动、因果、将来时、选项 */
-function visualOnly(s) {
-    return flatten(s)
-        .split(/[。；;]/)[0]                                   // 只取第一句
+/**
+ * 单句清洗：去掉这一句里不可画的成分。
+ * 注意只洗「句子内部」，不决定留不留这一句 —— 去留由 visualOnly 统一管。
+ */
+function cleanOneSentence(s) {
+    return String(s ?? '')
         .replace(/[（(][^）)]*[）)]/g, '')                      // 成对的括注
-        .replace(/[（(][^）)]*$/, '')                          // 没闭合的括注：连同后半句一起丢
+        .replace(/[（(][^）)]*$/, '')                           // 没闭合的括注：连同后半句一起丢
         .replace(/(她|他|它|对方|两人|二人)(心里|心中|暗自|似乎|好像|可能|觉得|感到|想着|打算|决定|犹豫)/g, '')
         .replace(/(想要|准备|打算|试图|企图|好像要|似乎要|可能会)/g, '')
         .replace(/[「」“”"'’]/g, '')
         .replace(/[|｜{}]/g, '，')
-        .replace(/[．。]+$/g, '')                               // 句末多余句号
+        // 「动作：」「地点:」这类字段名前缀，镜头按字段写时要去掉，否则进提示词是噪声
+        .replace(/^[\u4e00-\u9fa5A-Za-z]{1,6}\s*[:：]\s*/, '')
         .replace(/，{2,}/g, '，')
-        .replace(/^[，、\s]+|[，、\s]+$/g, '')
+        .replace(/^[，、\s]+|[，、；;．。\s]+$/g, '')
         .trim();
+}
+
+/**
+ * 去掉叙事里不可画的东西：心理活动、因果、将来时、选项。
+ *
+ * v1.4.0 起**不再「只取第一句」**。原来的 `.split(/[。；;]/)[0]` 会从第一个
+ * 句号处把整段砍掉：镜头按「朝向。手。相对位置。接触」分句写时，后三句全丢，
+ * 这就是「字段没发送出去 / 只剩半句」的主因。现在改成逐句清洗、全部保留。
+ */
+function visualOnly(s) {
+    return flatten(s)
+        .split(/[。；;！？!?]/)
+        .map(cleanOneSentence)
+        .filter(x => x.length >= 2)                            // 洗完变空的句子才丢
+        .join('，');
 }
 
 /** item.caption 禁止出现指代别人的短语，否则模型会多画一个人 */
@@ -265,18 +283,52 @@ function sceneDesc(snap) {
  * 认这几种写法：vars.situation = "…" / vars.画面 = "…" /
  * vars.situation = { text|value|desc|situation: "…" }
  */
-function pickVarShot(vars) {
-    if (!vars || typeof vars !== 'object' || Array.isArray(vars)) return '';
-    for (const k of ['situation', '画面', '镜头', 'shot', 'visual']) {
-        const v = vars[k];
-        if (typeof v === 'string' && v.trim()) return v;
-        if (v && typeof v === 'object' && !Array.isArray(v)) {
-            for (const k2 of ['situation', 'text', 'value', 'desc']) {
-                if (typeof v[k2] === 'string' && v[k2].trim()) return v[k2];
-            }
+const SHOT_KEYS = ['situation', '画面', '镜头', 'shot', 'visual'];
+/** 镜头对象里这些键是元数据，不是画面内容 */
+const SHOT_SKIP = /^(updatedAt|updated|ts|time|createdAt|created|rev|revision|_)/i;
+
+/** 把任意形态的镜头值铺平成文本：字符串原样、对象逐字段、数组逐项 */
+function shotValueText(v) {
+    if (v === null || v === undefined) return '';
+    if (typeof v === 'string') return v.trim();
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    if (Array.isArray(v)) return v.map(shotValueText).filter(Boolean).join('，');
+    if (typeof v === 'object') {
+        const out = [];
+        for (const [k, val] of Object.entries(v)) {
+            if (SHOT_SKIP.test(k)) continue;
+            const t = shotValueText(val);
+            if (t) out.push(t);
         }
+        return out.join('，');
     }
     return '';
+}
+
+/**
+ * 取「画面镜头」。
+ *
+ * v1.4.0：镜头是对象时**不再只取第一个命中子键**（原来只读 situation/text/value/desc），
+ * 而是按字段顺序把所有字段拼成一段 —— 多字段镜头原来会静默丢掉其后全部内容，
+ * 只剩下扩展自己从名册/场景/时间拼出来的东西，读起来就是「截断 + 拼凑」。
+ *
+ * 认这几种写法：
+ *   vars.situation = "…"
+ *   vars.situation = { 位置: "…", 动作: "…", 接触: "…" }   ← 全部合并
+ *   vars.situation = ["…", "…"]
+ */
+function pickShot(vars) {
+    if (!vars || typeof vars !== 'object' || Array.isArray(vars)) return { text: '', from: '', fields: 0 };
+    for (const k of SHOT_KEYS) {
+        const v = vars[k];
+        const t = shotValueText(v);
+        if (!t) continue;
+        const fields = v && typeof v === 'object' && !Array.isArray(v)
+            ? Object.keys(v).filter(x => !SHOT_SKIP.test(x)).length
+            : 0;
+        return { text: t, from: `vars.${k}`, fields };
+    }
+    return { text: '', from: '', fields: 0 };
 }
 
 /* ---------------- 主函数 ---------------- */
@@ -296,18 +348,27 @@ export function composeScene(o = {}) {
     const cards = o.cards || {};
     // style 为空字符串 = 调用方已决定不加画风词（比如 ST 的 Prompt Prefix 已经在管）
     const style = o.style === undefined ? STYLE_DEFAULT : String(o.style || '').trim();
-    // 镜头字数上限:实测 90-120 字最准,超过 150 反而掉(见文档第十二节),默认 140
-    const sumMax = Math.max(60, Math.min(400, Number(o.summaryMax) || 140));
+    // 镜头字数上限：实测单句甜区 90–120 字（文档第十二节），默认 140
+    const sumMaxBase = Math.max(60, Math.min(400, Number(o.summaryMax) || 140));
     const maxPeople = Math.max(1, Math.min(3, o.maxPeople || 3));
     const report = [];
     const st = snap.state || {};
     const sf = st.sceneFocus || {};
 
     // 0) 局面：自定义变量 situation 优先，回退内置局势卡
-    const varShot = visualOnly(pickVarShot(snap.vars));
+    const shot = pickShot(snap.vars);
+    const varShot = visualOnly(shot.text);
     const builtinShot = visualOnly(sf.situation || '');
     const situation = varShot || builtinShot;
-    const situationFrom = varShot ? '自定义变量 situation' : (builtinShot ? 'sceneFocus.situation' : '无');
+    const situationFrom = varShot ? `自定义变量 ${shot.from.replace(/^vars\./, '')}` : (builtinShot ? 'sceneFocus.situation' : '');
+    if (situationFrom) {
+        const lost = shot.text ? shot.text.length - varShot.length : 0;
+        const fld = shot.fields ? `${shot.fields} 个字段，` : '';
+        report.push(`镜头: ${situationFrom}（${fld}原 ${shot.text.length || builtinShot.length} 字${lost > 3 ? `，清洗掉 ${lost} 字` : '，无截断'}）`);
+    }
+
+    // 镜头本身超上限时按内容放宽，否则六要素会被 sentenceClamp 砍掉后三条
+    const sumMax = Math.max(sumMaxBase, Math.min(400, situation.length + 60));
 
     // 1) 谁在场
     let names = Array.isArray(sf.participants) ? sf.participants.map(flatten).filter(Boolean) : [];
@@ -333,14 +394,34 @@ export function composeScene(o = {}) {
     }
     report.push(`在场: ${names.filter(Boolean).join('/') || '主角'}`);
 
-    const people = names.map(n => personProfile(n, snap, cards));
+    let people = names.map(n => personProfile(n, snap, cards));
+
+    /*
+     * 视角：pov = 第一人称。
+     * 酒馆正文本来就是「我」在看，第三人称全身构图常常和叙事对不上；
+     * 固定 pov 后画面只画对方一人，bbox/朝向/多人交互全部不用赌。
+     */
+    const view = String(o.view || 'auto').toLowerCase();
+    const povWanted = /^(pov|first|1st|第一人称)$/.test(view)
+        || (view === 'auto' && /第一人称|POV|从我的视角|我的视角|主角视角/i.test(situation));
+    let povMode = false;
+    if (povWanted && people.length) {
+        const userName = String(o.userName || snap.protagonist?.name || '').trim();
+        const isMe = p => !p.name || (userName && p.name === userName) || /^(我|你|user|主角)$/i.test(p.name);
+        const kept = people.filter(p => !isMe(p));
+        if (kept.length) {
+            if (kept.length < people.length) people = kept;
+            povMode = true;
+            report.push(`视角: 第一人称（画面里只有 ${people.map(p => p.name || '对方').join('/')}）`);
+        }
+    }
 
     // 2) 场景 / 光线 / 交互
     const scene = sceneDesc(snap);
     report.push(`场景: ${scene.from}`);
     const light = lightFromTime(st.time);
     report.push(`光线: ${st.time || '无'}`);
-    report.push(`局面: ${situation ? situation.slice(0, 36) + '…' : '无'}（${situationFrom}）`);
+    report.push(`局面 ${situation.length} 字: ${situation ? situation.slice(0, 60) + (situation.length > 60 ? '…' : '') : '无'}`);
     const kind = pickInteraction(situation);
     report.push(`构图: ${people.length}人/${kind}`);
 
@@ -353,14 +434,18 @@ export function composeScene(o = {}) {
         const p = people[0];
         const bits = [p.looks, p.outfit, p.condition].filter(Boolean).map((x, i) =>
             i === 0 ? x : x);
-        const head = bits.filter(Boolean).join('，');
+        const head = (povMode && p.name ? [p.name, ...bits] : bits).filter(Boolean).join('，');
         // 官方 Prompt Enhancer 规则:开头必须是「媒介 + 主体」,不能以动作开头
         const [medium, ...rest] = String(style || '').split(/[，,]/).map(x => x.trim()).filter(Boolean);
+        // POV 必须显式写清「镜头即主角眼睛」，否则模型会退回第三人称画两个全身
+        const povClause = povMode && !/第一人称|POV/i.test(situation)
+            ? '第一人称视角，镜头位于主角双眼高度，画面中只有对方，主角的手从画面下缘伸入前景'
+            : '';
         const tail = [situation, ...rest].filter(Boolean).join('，');
         if (o.styleFrom) report.push(`画风: ${style || '不加'}（${o.styleFrom}）`);
-        const text = sentenceClamp([medium, head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'), 240);
+        const text = sentenceClamp([medium, povClause, head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'), 240);
         report.push(`外貌来源: ${p.src}`);
-        return { mode: 'single', text, width: 1024, height: 1024, people, report };
+        return { mode: povMode ? 'pov' : 'single', text, width: 1024, height: 1024, people, report };
     }
 
     // 4) 多人：layout JSON

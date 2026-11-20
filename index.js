@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.4.14
+ * 柏宝书 · 场景生图桥接 v1.4.15
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.4.14';
+const VERSION = '1.4.15';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -514,6 +514,18 @@ function composeScene(o = {}) {
     if (scene.text) baseParts.push(scene.text);
     if (light) baseParts.push(light);
 
+    /*
+     * 不带 bbox：整段文本直接提交，位置全靠模型自己排。
+     * 画布尺寸按人数给（多人用宽幅），但不再给任何坐标。
+     */
+    if (o.bbox === false && situation) {
+        const w = people.length > 1 ? (o.width || 1248) : 1024;
+        const h = people.length > 1 ? (o.height || 832) : 1024;
+        const text = applyStyle(situation, style, o.styleFrom === '手动设置');
+        report.push(`不走 bbox：${people.length} 人全靠模型自己排位（无坐标可依）`);
+        return { mode: 'nl', text, width: w, height: h, people, report, cap: Infinity };
+    }
+
     if (people.length === 1) {
         const p = people[0];
         const bits = [p.looks, p.outfit, p.condition].filter(Boolean).map((x, i) =>
@@ -645,12 +657,14 @@ const LS = {
     size: 'bbs_img_size',
     people: 'bbs_img_people',
     view: 'bbs_img_view',
+    bbox: 'bbs_img_bbox',
 };
 
 const st = {
     enabled: localStorage.getItem(LS.enabled) === 'true',
     style: localStorage.getItem(LS.style),   // null = 没设过，走自动判断
     view: localStorage.getItem(LS.view) || 'auto',   // auto | pov | two
+    bbox: localStorage.getItem(LS.bbox) !== 'false',  // 默认带 bbox；off = 纯自然语言
     summaryMax: Number(localStorage.getItem(LS.maxchars)) || 140,
     detail: (() => {
         const raw = localStorage.getItem(LS.detail);
@@ -754,6 +768,7 @@ function buildPrompt() {
         style,
         styleFrom: from,
         view: st.view,
+        bbox: st.bbox,
         userName: ctxOrNull()?.name1 || '',
         summaryMax: st.summaryMax,
         detail: st.detail,
@@ -901,6 +916,13 @@ function register() {
         localStorage.setItem(LS.view, mode);
         await echo(`[bbs-img] 视角：${{ auto: '自动（镜头里写第一人称才走 pov）', pov: '固定第一人称，画面只画对方', two: '固定双人同框' }[mode]}`);
     };
+    const setBbox = async (v) => {
+        const t = String(v ?? '').trim().toLowerCase();
+        if (!/^(on|off|true|false|1|0|yes|no)$/.test(t)) { await echo('[bbs-img] bbox= 只认 on / off'); return; }
+        st.bbox = /^(on|true|1|yes)$/.test(t);
+        localStorage.setItem(LS.bbox, String(st.bbox));
+        await echo(st.bbox ? '[bbs-img] 带 bbox：按人数/构图给坐标框' : '[bbs-img] 不带 bbox：整段文本直接提交，位置靠模型自己排');
+    };
     const setPeople = async (v) => {
         const n = Number(String(v).match(/\d/)?.[0]);
         if (!n) { await echo('[bbs-img] people= 后面要跟数字 1–3'); return; }
@@ -942,6 +964,7 @@ function register() {
             for (const [name, description] of [
                 ['style', '画风后缀；auto 回到自动判断'],
                 ['view', '视角：auto 自动 / pov 第一人称 / two 双人同框'],
+                ['bbox', 'on 给坐标框（默认）/ off 纯自然语言，位置交给模型'],
                 ['maxchars', '镜头字数上限，默认 140；实测 90-120 最准（不设上限，填多少就是多少）'],
                 ['detail', '分段截断倍数；不填=不截断，0.5=收一半，2=放宽一倍'],
                 ['people', '最多画几个人 1–3'],
@@ -980,6 +1003,7 @@ function register() {
 
             if (n.style !== undefined) { await setStyle(n.style); touched = true; }
             if (n.view !== undefined) { await setView(n.view); touched = true; }
+            if (n.bbox !== undefined) { await setBbox(n.bbox); touched = true; }
             if (n.people !== undefined) { await setPeople(n.people); touched = true; }
             if (n.size !== undefined) { await setSize(n.size); touched = true; }
             if (n.detail !== undefined) { await setDetail(n.detail); touched = true; }
@@ -1007,6 +1031,9 @@ function register() {
 
             const mStyle = arg.match(/style=(.*)$/i);
             if (mStyle) { await setStyle(mStyle[1]); return ''; }
+
+            const mBbox = arg.match(/bbox=(on|off|true|false|1|0)/i);
+            if (mBbox) { await setBbox(mBbox[1]); return ''; }
 
             const mView = arg.match(/view=(auto|pov|two|第一人称|双人)/i);
             if (mView) { await setView(mView[1]); return ''; }

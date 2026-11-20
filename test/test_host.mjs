@@ -119,7 +119,7 @@ const snapMedium = {
 r = await run('style-override', snapMedium, '');
 {
     const cmd = r.commands.join('\n');
-    ok(cmd.includes('动漫插画：') || cmd.includes('动漫插画:'), '用户画风顶掉 caption 开头的媒介');
+    ok(cmd.includes('动漫插画，赛璐璐上色: ') || cmd.includes('动漫插画，赛璐璐上色：'), '画风整段（含后缀段）顶到最前面');
     ok(!cmd.includes('Photorealistic'), 'caption 原有媒介不再进提交文本');
 }
 

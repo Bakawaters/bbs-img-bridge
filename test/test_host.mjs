@@ -108,6 +108,7 @@ ok(r.commands.length === 0, '只设 style 不触发出图');
 
 r = await run('style-used', snapshots.pair, 'preview+');
 ok(r.echoes.join('\n').includes('画风: 动漫插画，赛璐璐上色（手动设置）'), '设置了 style 后 preview 显示手动来源');
+ok(r.echoes.join('\n').includes('赛璐璐上色'), '有 situation 时画风追加到单图提示词里');
 
 r = await run('people-named', snapshots.pair, '', { people: '2' });
 ok(r.echoes.join('\n').includes('最多画 2 人'), 'people= 走命名参数生效');
@@ -134,6 +135,7 @@ ok(vt.includes('自定义变量 situation'), '画面镜头取自自定义变量'
 ok(vt.includes('在场: 林夏/沈砚'), 'participants 为空时从镜头里的人名推断在场');
 ok(vt.includes('构图: 2人/close'), '「环抱住」被判为贴身接触');
 ok(vt.includes('"caption":"动漫插画，') || vt.includes('动漫插画，'), '提示词以媒介开头');
+ok(vt.includes('赛璐璐上色'), '有 situation 时画风也进 summary.caption（多人同理）');
 
 const snapNoVar = { ...snapVarShot, vars: {}, state: { ...snapVarShot.state, sceneFocus: { situation: '两人在绿化带里站着', participants: ['林夏'] } } };
 r = await run('no-var-shot', snapNoVar, 'preview');

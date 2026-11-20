@@ -142,3 +142,40 @@ ok(r.echoes.join('\n').includes('sceneFocus.situation'), '没有自定义变量�
 r = await run('maxchars-named', snapshots.pair, '', { maxchars: '240' });
 ok(r.echoes.join('\n').includes('镜头字数上限 240'), 'maxchars= 走命名参数生效');
 ok(r.commands.length === 0, '只设 maxchars 不触发出图');
+
+/* ---- v1.4.0：镜头不能截断、不能只取第一个字段 ---- */
+const snapMulti = {
+    ...snapVarShot,
+    vars: { situation: '林夏站在左侧，面向沈砚。重心落在右腿，右手扶着沈砚的左肩。两人相距半步，沈砚侧头看她。' },
+};
+r = await run('shot-multi-sentence', snapMulti, 'preview+');
+const mt = r.echoes.join('\n');
+ok(mt.includes('沈砚侧头看她'), '多句镜头保留到最后一句（不再只取第一句）');
+ok(mt.includes('重心落在右腿'), '多句镜头中间句没丢');
+ok(mt.includes('无截断'), '报告写明镜头无截断');
+
+const snapObj = {
+    ...snapVarShot,
+    vars: { situation: { 位置: '林夏在左，沈砚在右', 手: '林夏右手扶在沈砚肩上', 接触: '手掌与肩相触' } },
+};
+r = await run('shot-object', snapObj, 'preview+');
+const ot = r.echoes.join('\n');
+ok(ot.includes('手掌与肩相触'), '对象镜头把所有字段合并发送（不再只取第一个子键）');
+ok(ot.includes('3 个字段'), '报告写出镜头字段数');
+
+const snapPov = {
+    revision: 13,
+    state: { time: '2026-11-20 21:00', location: '卧室', sceneFocus: null },
+    vars: { situation: '林夏俯身靠近，右手撑着椅背，视线落在镜头上' },
+    protagonist: { name: '旅人' },
+    scenes: [],
+    npcs: [{ name: '林夏', desc: '黑色短发，琥珀色眼睛' }],
+};
+r = await run('view-pov', snapPov, 'preview+', { view: 'pov' });
+const pt = r.echoes.join('\n');
+ok(pt.includes('第一人称视角，镜头位于主角双眼高度'), 'view=pov 注入第一人称镜头描述');
+ok(pt.includes('视角: 第一人称'), 'view=pov 报告视角来源');
+ok(!pt.includes('"items"'), 'pov 走单人自然语言，不出 layout JSON');
+
+r = await run('view-reset', snapshots.pair, '', { view: 'auto' });
+ok(r.echoes.join('\n').includes('视角：自动'), 'view=auto 可复位');

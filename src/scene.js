@@ -90,9 +90,17 @@ function cleanOneSentence(s) {
  * v1.4.0 起**不再「只取第一句」**。原来的 `.split(/[。；;]/)[0]` 会从第一个
  * 句号处把整段砍掉：镜头按「朝向。手。相对位置。接触」分句写时，后三句全丢，
  * 这就是「字段没发送出去 / 只剩半句」的主因。现在改成逐句清洗、全部保留。
+ *
+ * v1.4.5：**非中文输出直接放行**。规则全是中文词（她心里/打算/「」/动作：），
+ * 对英文长描述一次也命中不了，反而会误伤它最在意的东西 ——
+ * 删掉 (括注)、删掉 "双引号文案"、把 ! 换成全角逗号。
  */
 function visualOnly(s) {
-    return flatten(s)
+    const raw = flatten(s);
+    const compact = raw.replace(/\s/g, '');
+    const cjk = (raw.match(/[\u4e00-\u9fff]/g) || []).length;
+    if (!compact || cjk < compact.length * 0.35) return raw;   // 英文/混合：原样通过
+    return raw
         .split(/[。；;！？!?]/)
         .map(cleanOneSentence)
         .filter(x => x.length >= 2)                            // 洗完变空的句子才丢

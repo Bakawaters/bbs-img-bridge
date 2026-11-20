@@ -110,6 +110,19 @@ r = await run('style-used', snapshots.pair, 'preview+');
 ok(r.echoes.join('\n').includes('画风: 动漫插画，赛璐璐上色（手动设置）'), '设置了 style 后 preview 显示手动来源');
 ok(r.echoes.join('\n').includes('赛璐璐上色'), '有 situation 时画风追加到单图提示词里');
 
+/* ---- v1.4.10：caption 自带的媒介必须被用户画风顶掉 ---- */
+const snapMedium = {
+    ...snapshots.pair,
+    state: { ...snapshots.pair.state, sceneFocus: { situation: '', participants: ['林夏', '沈砚'] } },
+    vars: { situation: 'Photorealistic digital illustration: two women stand by the window of a bookstore.' },
+};
+r = await run('style-override', snapMedium, '');
+{
+    const cmd = r.commands.join('\n');
+    ok(cmd.includes('动漫插画：') || cmd.includes('动漫插画:'), '用户画风顶掉 caption 开头的媒介');
+    ok(!cmd.includes('Photorealistic'), 'caption 原有媒介不再进提交文本');
+}
+
 r = await run('people-named', snapshots.pair, '', { people: '2' });
 ok(r.echoes.join('\n').includes('最多画 2 人'), 'people= 走命名参数生效');
 ok(r.commands.length === 0, '只设 people 不触发出图');

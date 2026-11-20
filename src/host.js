@@ -6,9 +6,7 @@
 const CFG = {
     maxPeople: 3,
     style: '写实摄影，浅景深',
-    sizeSingle: { w: 1024, h: 1024 },
     sizeMulti: { w: 1248, h: 832 },
-    autoOnReceive: false,
 };
 
 const LS = {
@@ -36,8 +34,6 @@ const st = {
     maxPeople: Number(localStorage.getItem(LS.people)) || CFG.maxPeople,
     busy: false,
     lastKey: '',
-    fired: 0,
-    skipped: 0,
     lastCommand: '',
 };
 
@@ -153,14 +149,12 @@ function sdCommand(res) {
 async function doGenerate(force = false) {
     const built = buildPrompt();
     if (!built.ok) {
-        st.skipped++;
         return built;
     }
     if (st.busy) return { ok: false, reason: '上一张还没出完' };
 
     const key = `${built.revision}|${built.text}`;
     if (!force && key === st.lastKey) {
-        st.skipped++;
         return { ok: false, reason: 'duplicate' };
     }
 
@@ -174,7 +168,6 @@ async function doGenerate(force = false) {
     try {
         console.log('[bbs-img] 出图', built.mode, built.width + 'x' + built.height, built.text);
         const url = await ctx.executeSlashCommandsWithOptions(cmd);
-        st.fired++;
         if (!url) {
             return { ok: false, reason: '出图命令执行了但没拿到图片地址，用 /bbs-img rawcmd 看提交内容', cmd };
         }

@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.4.13
+ * 柏宝书 · 场景生图桥接 v1.4.14
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.4.13';
+const VERSION = '1.4.14';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -110,6 +110,25 @@ function applyStyle(caption, style, force = false) {
     }
     if (cap.includes(seg[0])) return cap;
     return seg.join(styleSep) + joiner + cap;
+}
+
+/**
+ * bbox 的归属靠坐标本身（空间），名字只用来告诉模型「这个框里是谁」。
+ * - summary 里出现过这个名字 → 用名字（真锚点）
+ * - summary 是中文但没写名字 → 用外貌第一段（同语言，模型对得上）
+ * - summary 是英文长描述 → 不加名字/外貌（中文名字在英文 caption 里是纯噪声），只留方位
+ */
+function identityAnchor(p, situation) {
+    const name = String(p?.name || '').trim();
+    const sit = String(situation || '');
+    if (name && sit.includes(name)) return name;
+    if (!isCJKText(sit)) return '';
+    const firstSeg = s => String(s || '').split(/[，,。；;、]/).map(x => x.trim()).filter(Boolean)[0] || '';
+    for (const field of [p?.looks, p?.outfit]) {
+        const seg = firstSeg(field);
+        if (seg) return seg.length > 14 ? seg.slice(0, 14) : seg;
+    }
+    return '';
 }
 
 /** 中文为主的文本（≥35% 汉字）—— 用来决定要不要往里面掺中文行为词 */
@@ -569,9 +588,13 @@ function composeScene(o = {}) {
 
     const items = people.map((p, i) => {
         const parts = [];
-        if (p.name) parts.push(p.name);
-        // 有 situation 时不再放名册外貌/服装/状态：caption 里已经描述过，重复只会打架
-        if (!situation) {
+        // 有 situation 时只留一个「身份锚点」：summary 里出现过的名字才有用，
+        // 否则名字对模型是纯噪声（英文 caption 里根本没有「墨言」这个词）——改用外貌首段。
+        if (situation) {
+            const anchor = identityAnchor(p, situation);
+            if (anchor) parts.push(anchor);
+        } else {
+            if (p.name) parts.push(p.name);
             if (p.looks) parts.push(p.looks);
             if (p.outfit) parts.push(p.outfit);
             if (p.condition) parts.push(p.condition);
@@ -596,7 +619,7 @@ function composeScene(o = {}) {
     const text = JSON.stringify(layout, null, 0);
     report.push(`外貌来源: ${people.map(p => p.src).join(' / ')}`);
     report.push(`summary ${layout.summary.caption.length}/${sumMax} 字（${situation ? 'situation 原文' : '画风+场景+光线拼接'}）`);
-    report.push(situation ? 'items: 姓名+朝向+方位（外貌/服装不再重复）' : 'items: 姓名+外貌+服装+状态+朝向+方位');
+    report.push(situation ? 'items: 身份锚点+朝向+方位（英文 caption 里不放中文名字）' : 'items: 姓名+外貌+服装+状态+朝向+方位');
     report.push(`提示词 ${text.length} 字`);
 
     return { mode: 'layout', text, width, height, people, report, layout, cap: sumMax };

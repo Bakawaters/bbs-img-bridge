@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.4.7
+ * 柏宝书 · 场景生图桥接 v1.4.8
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.4.7';
+const VERSION = '1.4.8';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -538,9 +538,12 @@ function composeScene(o = {}) {
     const items = people.map((p, i) => {
         const parts = [];
         if (p.name) parts.push(p.name);
-        if (p.looks) parts.push(p.looks);
-        if (p.outfit) parts.push(p.outfit);
-        if (p.condition) parts.push(p.condition);
+        // 有 situation 时不再放名册外貌/服装/状态：caption 里已经描述过，重复只会打架
+        if (!situation) {
+            if (p.looks) parts.push(p.looks);
+            if (p.outfit) parts.push(p.outfit);
+            if (p.condition) parts.push(p.condition);
+        }
         // 只写本人：朝向 + 方位，绝不复述对方的动作
         const face = facing[p.name || (i === 0 ? '#0' : '#1')];
         if (face) parts.push(face);
@@ -561,6 +564,7 @@ function composeScene(o = {}) {
     const text = JSON.stringify(layout, null, 0);
     report.push(`外貌来源: ${people.map(p => p.src).join(' / ')}`);
     report.push(`summary ${layout.summary.caption.length}/${sumMax} 字（${situation ? 'situation 原文' : '画风+场景+光线拼接'}）`);
+    report.push(situation ? 'items: 姓名+朝向+方位（外貌/服装不再重复）' : 'items: 姓名+外貌+服装+状态+朝向+方位');
     report.push(`提示词 ${text.length} 字`);
 
     return { mode: 'layout', text, width, height, people, report, layout, cap: sumMax };
@@ -575,9 +579,7 @@ function composeScene(o = {}) {
 const CFG = {
     maxPeople: 3,
     style: '写实摄影，浅景深',
-    sizeSingle: { w: 1024, h: 1024 },
     sizeMulti: { w: 1248, h: 832 },
-    autoOnReceive: false,
 };
 
 const LS = {
@@ -605,8 +607,6 @@ const st = {
     maxPeople: Number(localStorage.getItem(LS.people)) || CFG.maxPeople,
     busy: false,
     lastKey: '',
-    fired: 0,
-    skipped: 0,
     lastCommand: '',
 };
 
@@ -722,14 +722,12 @@ function sdCommand(res) {
 async function doGenerate(force = false) {
     const built = buildPrompt();
     if (!built.ok) {
-        st.skipped++;
         return built;
     }
     if (st.busy) return { ok: false, reason: '上一张还没出完' };
 
     const key = `${built.revision}|${built.text}`;
     if (!force && key === st.lastKey) {
-        st.skipped++;
         return { ok: false, reason: 'duplicate' };
     }
 
@@ -743,7 +741,6 @@ async function doGenerate(force = false) {
     try {
         console.log('[bbs-img] 出图', built.mode, built.width + 'x' + built.height, built.text);
         const url = await ctx.executeSlashCommandsWithOptions(cmd);
-        st.fired++;
         if (!url) {
             return { ok: false, reason: '出图命令执行了但没拿到图片地址，用 /bbs-img rawcmd 看提交内容', cmd };
         }

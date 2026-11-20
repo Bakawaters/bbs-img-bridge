@@ -143,6 +143,21 @@ r = await run('maxchars-named', snapshots.pair, '', { maxchars: '240' });
 ok(r.echoes.join('\n').includes('镜头字数上限 240'), 'maxchars= 走命名参数生效');
 ok(r.commands.length === 0, '只设 maxchars 不触发出图');
 
+/* ---- v1.4.2：maxchars 天花板 400 → 800 ---- */
+r = await run('maxchars-800', snapshots.pair, '', { maxchars: '800' });
+ok(r.echoes.join('\n').includes('镜头字数上限 800'), 'maxchars=800 不再被静默压回 400');
+r = await run('maxchars-over', snapshots.pair, '', { maxchars: '1200' });
+ok(r.echoes.join('\n').includes('镜头字数上限 1200'), 'maxchars 没有天花板，填 1200 就是 1200');
+r = await run('detail-named', snapshots.pair, '', { detail: '2' });
+{
+    const e = r.echoes.join('\n');
+    ok(e.includes('分段截断 ×2') && e.includes('外貌 140'), 'detail=2 把外貌截断放到 140');
+}
+r = await run('detail-off', snapshots.pair, '', { detail: '0' });
+ok(r.echoes.join('\n').includes('分段不截断'), 'detail=0 回到不截断（默认态）');
+r = await run('maxchars-back', snapshots.pair, '', { maxchars: '140' });
+ok(r.echoes.join('\n').includes('镜头字数上限 140'), 'maxchars 可以改回 140');
+
 /* ---- v1.4.0：镜头不能截断、不能只取第一个字段 ---- */
 const snapMulti = {
     ...snapVarShot,

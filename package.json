@@ -1,6 +1,6 @@
 {
   "name": "bbs-img-bridge",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "type": "module",
   "description": "柏宝书 · 场景生图桥接（SillyTavern 扩展）",

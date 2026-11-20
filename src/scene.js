@@ -75,24 +75,22 @@ function normalizePunct(s) {
 function applyStyle(caption, style, force = false) {
     const seg = String(style || '').split(/[，,]/).map(x => x.trim()).filter(Boolean);
     if (!seg.length) return caption;
-    const [medium, ...rest] = seg;
     const cap = String(caption || '').trim();
-    if (!cap) return seg.join('，');
+    if (!cap) return seg.join(isCJKText(seg.join(',')) ? '，' : ', ');
     const cjk = isCJKText(cap);
-    const sep = cjk ? '，' : ', ';
-    let out = cap;
+    const styleSep = isCJKText(seg.join(',')) ? '，' : ', ';   // 画风词自身是中文就用全角
+    const joiner = cjk ? '：' : ': ';
 
+    // caption 自带的媒介段（"Photorealistic digital illustration:" / "动漫风格数字插画："）
     const head = cap.match(/^\s*([^:：，,。.\n]{2,40})\s*([:：])\s*/);
-    if (head && (force || cap.includes(medium))) {
-        // 显式设置才顶掉；否则 caption 自己的媒介更贴合画面，别覆盖
-        if (!cap.includes(medium)) out = medium + head[2] + cap.slice(head[0].length);
-    } else if (!head && !cap.includes(medium)) {
-        out = medium + (cjk ? '：' : ': ') + cap;
+    if (head) {
+        if (!force) return cap;                                   // 没手动指定就别覆盖它
+        if (cap.includes(seg[0])) return cap;                     // 已经是这个媒介，不重复
+        // 画风整段一起顶到最前面 —— 追加在 1400 字末尾等于没设
+        return seg.join(styleSep) + joiner + cap.slice(head[0].length);
     }
-
-    const extra = rest.filter(x => !cap.includes(x));
-    if (extra.length) out += sep + extra.join(sep);
-    return out;
+    if (cap.includes(seg[0])) return cap;
+    return seg.join(styleSep) + joiner + cap;
 }
 
 /** 中文为主的文本（≥35% 汉字）—— 用来决定要不要往里面掺中文行为词 */

@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.4.12
+ * 柏宝书 · 场景生图桥接 v1.4.13
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.4.12';
+const VERSION = '1.4.13';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -940,6 +940,21 @@ function register() {
         callback: async (named, value) => {
             const n = named || {};
             let touched = false;
+            let arg = String(value || '').trim();
+
+            /*
+             * ST 的命名参数值遇到空格就截断：/bbs-img style=anima char
+             * 会变成 named.style='anima' + value='char'，然后 'char' 被当成
+             * 无名参数 → 直接出图。这里把剩下的词并回画风，并且不再出图。
+             */
+            const SUB = /^(preview\+?|full|raw|rawcmd|on|off|reset)$/i;
+            if (n.style !== undefined && arg && !SUB.test(arg)) {
+                const merged = `${String(n.style).trim()} ${arg}`.trim();
+                await setStyle(merged);
+                await echo('[bbs-img] 画风带空格时用双引号更稳：/bbs-img style="anima char"');
+                return '';
+            }
+
             if (n.style !== undefined) { await setStyle(n.style); touched = true; }
             if (n.view !== undefined) { await setView(n.view); touched = true; }
             if (n.people !== undefined) { await setPeople(n.people); touched = true; }
@@ -947,7 +962,6 @@ function register() {
             if (n.detail !== undefined) { await setDetail(n.detail); touched = true; }
             if (n.maxchars !== undefined) { await setMaxchars(n.maxchars); touched = true; }
 
-            const arg = String(value || '').trim();
             const low = arg.toLowerCase();
 
             if (low === 'preview') { await doPreview(false); return ''; }

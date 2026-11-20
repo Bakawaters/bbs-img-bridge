@@ -115,3 +115,26 @@ ok(r.commands.length === 0, '只设 people 不触发出图');
 
 r = await run('size-named', snapshots.pair, '', { size: '1024x1024' });
 ok(r.echoes.join('\n').includes('1024x1024'), 'size= 走命名参数生效');
+
+/* ---- 自定义变量 situation（柏宝书 vars）优先于内置局势卡 ---- */
+const snapVarShot = {
+    revision: 12,
+    state: { time: '2026-11-19 23:40', location: '街心绿化带', sceneFocus: null },
+    vars: { situation: '沈砚从背后环抱住林夏的腰，两人贴得很近，林夏侧头微笑' },
+    protagonist: {},
+    scenes: [],
+    npcs: [
+        { name: '林夏', desc: '黑色短发，琥珀色眼睛' },
+        { name: '沈砚', desc: '亚麻色长卷发，身形高瘦' },
+    ],
+};
+r = await run('var-shot', snapVarShot, 'preview+');
+const vt = r.echoes.join('\n');
+ok(vt.includes('自定义变量 situation'), '画面镜头取自自定义变量');
+ok(vt.includes('在场: 林夏/沈砚'), 'participants 为空时从镜头里的人名推断在场');
+ok(vt.includes('构图: 2人/close'), '「环抱住」被判为贴身接触');
+ok(vt.includes('"caption":"动漫插画，') || vt.includes('动漫插画，'), '提示词以媒介开头');
+
+const snapNoVar = { ...snapVarShot, vars: {}, state: { ...snapVarShot.state, sceneFocus: { situation: '两人在绿化带里站着', participants: ['林夏'] } } };
+r = await run('no-var-shot', snapNoVar, 'preview');
+ok(r.echoes.join('\n').includes('sceneFocus.situation'), '没有自定义变量时回退内置局势卡');

@@ -138,3 +138,7 @@ ok(vt.includes('"caption":"动漫插画，') || vt.includes('动漫插画，'), 
 const snapNoVar = { ...snapVarShot, vars: {}, state: { ...snapVarShot.state, sceneFocus: { situation: '两人在绿化带里站着', participants: ['林夏'] } } };
 r = await run('no-var-shot', snapNoVar, 'preview');
 ok(r.echoes.join('\n').includes('sceneFocus.situation'), '没有自定义变量时回退内置局势卡');
+
+r = await run('maxchars-named', snapshots.pair, '', { maxchars: '240' });
+ok(r.echoes.join('\n').includes('镜头字数上限 240'), 'maxchars= 走命名参数生效');
+ok(r.commands.length === 0, '只设 maxchars 不触发出图');

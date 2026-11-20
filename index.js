@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v1.2.0
+ * 柏宝书 · 场景生图桥接 v1.3.0
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -15,7 +15,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 
 /**
  * bbs-scene —— 柏宝书快照 → MOSS 生图提示词/布局
@@ -315,6 +315,8 @@ function composeScene(o = {}) {
     const cards = o.cards || {};
     // style 为空字符串 = 调用方已决定不加画风词（比如 ST 的 Prompt Prefix 已经在管）
     const style = o.style === undefined ? STYLE_DEFAULT : String(o.style || '').trim();
+    // 镜头字数上限:实测 90-120 字最准,超过 150 反而掉(见文档第十二节),默认 140
+    const sumMax = Math.max(60, Math.min(400, Number(o.summaryMax) || 140));
     const maxPeople = Math.max(1, Math.min(3, o.maxPeople || 3));
     const report = [];
     const st = snap.state || {};
@@ -426,7 +428,7 @@ function composeScene(o = {}) {
     });
 
     const layout = {
-        summary: { caption: sentenceClamp(summaryBits.join('，'), 140) },
+        summary: { caption: sentenceClamp(summaryBits.join('，'), sumMax) },
         items,
         bbox_coord_space: 'abs_centralized',
         bbox_format: 'yxyx',
@@ -455,6 +457,7 @@ const CFG = {
 const LS = {
     enabled: 'bbs_img_enabled',
     style: 'bbs_img_style',
+    maxchars: 'bbs_img_maxchars',
     size: 'bbs_img_size',
     people: 'bbs_img_people',
 };
@@ -462,6 +465,7 @@ const LS = {
 const st = {
     enabled: localStorage.getItem(LS.enabled) === 'true',
     style: localStorage.getItem(LS.style),   // null = 没设过，走自动判断
+    summaryMax: Number(localStorage.getItem(LS.maxchars)) || 140,
     size: JSON.parse(localStorage.getItem(LS.size) || 'null') || CFG.sizeMulti,
     maxPeople: Number(localStorage.getItem(LS.people)) || CFG.maxPeople,
     busy: false,
@@ -559,6 +563,7 @@ function buildPrompt() {
         cards,
         style,
         styleFrom: from,
+        summaryMax: st.summaryMax,
         maxPeople: st.maxPeople,
         width: st.size?.w || CFG.sizeMulti.w,
         height: st.size?.h || CFG.sizeMulti.h,
@@ -711,6 +716,7 @@ function register() {
         if (N?.fromProps) {
             for (const [name, description] of [
                 ['style', '画风后缀；auto 回到自动判断'],
+                ['maxchars', '镜头字数上限，默认 140；实测 90-120 最准'],
                 ['people', '最多画几个人 1–3'],
                 ['size', '多人图尺寸，如 1248x832'],
             ]) {
@@ -733,6 +739,12 @@ function register() {
             if (n.style !== undefined) { await setStyle(n.style); touched = true; }
             if (n.people !== undefined) { await setPeople(n.people); touched = true; }
             if (n.size !== undefined) { await setSize(n.size); touched = true; }
+            if (n.maxchars !== undefined) {
+                st.summaryMax = Math.max(60, Math.min(400, Number(String(n.maxchars).match(/\d+/)?.[0]) || 140));
+                localStorage.setItem(LS.maxchars, String(st.summaryMax));
+                await echo(`[bbs-img] 镜头字数上限 ${st.summaryMax}`);
+                touched = true;
+            }
 
             const arg = String(value || '').trim();
             const low = arg.toLowerCase();

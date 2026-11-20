@@ -66,17 +66,33 @@ function normalizePunct(s) {
 }
 
 /**
- * situation 已经是完整 caption 时，画风只能追加在后缀 —— 前置会破坏「媒介 + 主体」开头。
- * caption 里已经出现过的画风段就不再重复。
+ * 画风必须真的能改风格：
+ * - 显式给了 style，就**替换 caption 开头已有的媒介**（"Photorealistic digital illustration:" 这种），
+ *   否则那段自带媒介会把用户的设置顶掉，追加在结尾也没用（1600 字的 caption 末尾权重几乎为零）。
+ * - caption 没有媒介开头，就直接补在最前面。
+ * - style 剩下的段追加在后缀。
  */
-function styleTail(situation, style) {
+function applyStyle(caption, style, force = false) {
     const seg = String(style || '').split(/[，,]/).map(x => x.trim()).filter(Boolean);
-    if (!seg.length) return '';
-    const [first, ...others] = seg;
-    const use = String(situation || '').includes(first) ? others : seg;
-    if (!use.length) return '';
-    const sep = isCJKText(situation) ? '，' : ', ';
-    return sep + use.join(sep);
+    if (!seg.length) return caption;
+    const [medium, ...rest] = seg;
+    const cap = String(caption || '').trim();
+    if (!cap) return seg.join('，');
+    const cjk = isCJKText(cap);
+    const sep = cjk ? '，' : ', ';
+    let out = cap;
+
+    const head = cap.match(/^\s*([^:：，,。.\n]{2,40})\s*([:：])\s*/);
+    if (head && (force || cap.includes(medium))) {
+        // 显式设置才顶掉；否则 caption 自己的媒介更贴合画面，别覆盖
+        if (!cap.includes(medium)) out = medium + head[2] + cap.slice(head[0].length);
+    } else if (!head && !cap.includes(medium)) {
+        out = medium + (cjk ? '：' : ': ') + cap;
+    }
+
+    const extra = rest.filter(x => !cap.includes(x));
+    if (extra.length) out += sep + extra.join(sep);
+    return out;
 }
 
 /** 中文为主的文本（≥35% 汉字）—— 用来决定要不要往里面掺中文行为词 */
@@ -484,9 +500,11 @@ export function composeScene(o = {}) {
         const full = !!situation;
         // POV 锚点只在中文镜头上补：英文 caption 由生成它的 prompt 自己负责机位
         const povPre = povMode && full && isCJKText(situation) ? povClause : '';
+        const explicit = o.styleFrom === '手动设置';
+        const styled = full ? applyStyle(situation, style, explicit) : '';
         const text = sentenceClamp(
             full
-                ? [povPre, situation].filter(Boolean).join('，') + styleTail(situation, style)
+                ? [povPre, styled].filter(Boolean).join('，')
                 : [medium, povClause, head || '一人物', baseParts.join('，'), tail].filter(Boolean).join('，'),
             totalCap,
         );
@@ -509,8 +527,8 @@ export function composeScene(o = {}) {
     const [medium, ...styleRest] = String(style || '').split(/[，,]/).map(x => x.trim()).filter(Boolean);
     const summaryBits = [];
     if (situation) {
-        // situation 已是自足的英文 caption，原样用；画风只追加后缀，不叠场景/光线
-        summaryBits.push(situation + styleTail(situation, style));
+        // situation 已是自足的 caption：画风要顶掉它开头的媒介，否则用户设置等于没设
+        summaryBits.push(applyStyle(situation, style, o.styleFrom === '手动设置'));
     } else {
         if (medium) summaryBits.push(medium);
         if (scene.text) summaryBits.push(scene.text);

@@ -296,6 +296,8 @@ export function composeScene(o = {}) {
     const cards = o.cards || {};
     // style 为空字符串 = 调用方已决定不加画风词（比如 ST 的 Prompt Prefix 已经在管）
     const style = o.style === undefined ? STYLE_DEFAULT : String(o.style || '').trim();
+    // 镜头字数上限:实测 90-120 字最准,超过 150 反而掉(见文档第十二节),默认 140
+    const sumMax = Math.max(60, Math.min(400, Number(o.summaryMax) || 140));
     const maxPeople = Math.max(1, Math.min(3, o.maxPeople || 3));
     const report = [];
     const st = snap.state || {};
@@ -407,7 +409,7 @@ export function composeScene(o = {}) {
     });
 
     const layout = {
-        summary: { caption: sentenceClamp(summaryBits.join('，'), 140) },
+        summary: { caption: sentenceClamp(summaryBits.join('，'), sumMax) },
         items,
         bbox_coord_space: 'abs_centralized',
         bbox_format: 'yxyx',

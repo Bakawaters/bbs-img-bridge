@@ -214,6 +214,7 @@ async function doRaw() {
     const sf = snap.state?.sceneFocus || null;
     const slim = {
         revision: snap.revision,
+        vars: snap.vars,
         state: { time: snap.state?.time, location: snap.state?.location, locationPath: snap.state?.locationPath, sceneFocus: sf },
         protagonist: snap.protagonist,
         scenes: (snap.scenes || []).slice(0, 3).map(s => ({ name: s.name, desc: s.desc })),

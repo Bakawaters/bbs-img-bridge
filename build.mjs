@@ -20,6 +20,7 @@ const banner = `/**
  *   /bbs-img preview    看提示词来自哪里
  *   /bbs-img preview+   看完整提示词 / 提交命令
  *   /bbs-img raw        倾倒快照（排查）
+ *   /bbs-img ghosts     看幽灵楼是否已排除出柏宝书记忆
  *   /bbs-img on|off     收到 AI 消息自动出图
  *   /bbs-img style=xxx  画风前缀（auto 清空）
  *   /bbs-img reset      清去重

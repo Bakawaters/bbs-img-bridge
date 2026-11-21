@@ -118,6 +118,106 @@ async function doGenerate(force = false) {
     }
 }
 
+/* ---------------- 幽灵楼:不参与柏宝书记忆 ---------------- */
+
+/*
+ * 用户点消息菜单里的「幽灵」按钮把某楼移出 AI 上下文(ST 的 /hide → is_system=true)。
+ * 柏宝书 1.3.5 仍会把这种楼当成真实 AI 回复摘进记忆,再以摘要形式注入回去 ——
+ * 等于绕过用户的隐藏操作偷偷塞回上下文。
+ *
+ * 桥接不改柏宝书一行代码:走它公开认可的「番外」通道(extra.bbs_omit = 此楼对记忆引擎不存在),
+ * 自动给幽灵楼补标记;楼恢复可见时撤回。你自己在楼内面板点掉过番外(标记还在、omit 没了)则视为
+ * 你的决定,不再强加。
+ */
+const OMIT_BY = 'bbs-img-bridge';
+
+/** 幽灵楼 = ST 隐藏(is_system) 且不是柏宝书隐藏的、不是原生系统楼、不是搬运锚点楼 */
+function isGhostFloor(m) {
+    if (!m || typeof m !== 'object') return false;
+    const ex = m.extra || {};
+    if (ex.type) return false;              // /sys、叙事注入等原生系统楼
+    if (ex.bbs_hidden) return false;        // 柏宝书自己隐藏的旧楼(先摘后隐)
+    if (ex.bbs_leaf && ex.bbs_leaf.seed) return false; // 带数据开新聊天时的锚点楼
+    return m.is_system === true;
+}
+
+/**
+ * 同步一遍。就地改 chat[].extra,返回 { marked, restored }。
+ * 纯逻辑、无 IO,方便单测。
+ */
+function sweepGhostFloors(chat) {
+    let marked = 0;
+    let restored = 0;
+    if (!Array.isArray(chat)) return { marked, restored };
+
+    for (const m of chat) {
+        if (!m || typeof m !== 'object') continue;
+        const ex = m.extra;
+
+        if (isGhostFloor(m)) {
+            if (ex?.bbs_omit === true) continue;        // 已经是番外(自己的或用户标的),不动
+            if (ex?.bbs_omit_by === OMIT_BY) {          // 用户手动撤销过 → 尊重,不再强加
+                delete ex.bbs_omit_by;
+                continue;
+            }
+            m.extra = { ...(ex || {}), bbs_omit: true, bbs_omit_by: OMIT_BY };
+            marked++;
+        } else if (ex?.bbs_omit_by === OMIT_BY) {
+            const { bbs_omit: _o, bbs_omit_by: _b, ...rest } = ex; // 楼恢复可见 → 撤回
+            m.extra = rest;
+            restored++;
+        }
+    }
+    return { marked, restored };
+}
+
+/** 扫当前聊天并落盘。没有变化就什么都不做(不空写 chat 文件)。 */
+function runGhostSweep(reason) {
+    const ctx = ctxOrNull();
+    const chat = ctx?.chat;
+    if (!Array.isArray(chat)) return { marked: 0, restored: 0 };
+
+    const r = sweepGhostFloors(chat);
+    if (!r.marked && !r.restored) return r;
+
+    console.log(`[bbs-img] 幽灵楼同步(${reason}):标记 ${r.marked},撤回 ${r.restored}`);
+    try { ctx.saveChat?.(); } catch (e) { console.warn('[bbs-img] 保存聊天失败', e); }
+    return r;
+}
+
+let ghostTimer = null;
+/** 合并短时间内的多次触发(点一下幽灵按钮会连带好几个 ST 事件)。 */
+function scheduleGhostSweep(reason) {
+    if (ghostTimer) return;
+    ghostTimer = setTimeout(() => {
+        ghostTimer = null;
+        try { runGhostSweep(reason); } catch (e) { console.warn('[bbs-img] 幽灵楼同步失败', e); }
+    }, 300);
+}
+
+function bindGhostSweep() {
+    const ctx = ctxOrNull();
+    runGhostSweep('启动'); // 历史遗留的幽灵楼立刻处理
+
+    try {
+        const es = ctx?.eventSource;
+        const et = ctx?.eventTypes || {};
+        for (const name of ['CHAT_CHANGED', 'CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MESSAGE_SWIPED']) {
+            if (et[name]) es.on(et[name], () => scheduleGhostSweep(name));
+        }
+    } catch (e) {
+        console.warn('[bbs-img] 幽灵楼事件订阅失败', e);
+    }
+
+    // 幽灵按钮就在消息菜单里:聊天区内任何点击后补扫一次(比轮询省)。
+    if (typeof document !== 'undefined' && document.addEventListener) {
+        document.addEventListener('click', ev => {
+            const t = ev?.target;
+            if (t && typeof t.closest === 'function' && t.closest('#chat .mes')) scheduleGhostSweep('click');
+        }, true);
+    }
+}
+
 /* ---------------- 输出 ---------------- */
 
 function safeEcho(s) {
@@ -178,6 +278,22 @@ async function doRaw() {
     await echo('[bbs-img] ' + JSON.stringify(slim));
 }
 
+async function doGhostReport() {
+    const ctx = ctxOrNull();
+    const chat = ctx?.chat;
+    if (!Array.isArray(chat)) { await echo('[bbs-img] 拿不到聊天'); return; }
+
+    const r = runGhostSweep('手动');
+    let ghost = 0;
+    let mine = 0;
+    for (const m of chat) {
+        if (!isGhostFloor(m)) continue;
+        ghost++;
+        if (m.extra?.bbs_omit_by === OMIT_BY) mine++;
+    }
+    await echo(`[bbs-img] 幽灵楼 ${ghost} 个,其中 ${mine} 个已标番外(不计入柏宝书记忆);本次新标 ${r.marked}、撤回 ${r.restored}`);
+}
+
 /* ---------------- 注册 ---------------- */
 
 function register() {
@@ -228,7 +344,7 @@ function register() {
              * 会变成 named.style='anima' + value='char'，然后 'char' 被当成
              * 无名参数 → 直接出图。这里把剩下的词并回画风，并且不再出图。
              */
-            const SUB = /^(preview\+?|full|raw|rawcmd|on|off|reset)$/i;
+            const SUB = /^(preview\+?|full|raw|rawcmd|ghosts|on|off|reset)$/i;
             if (n.style !== undefined) {
                 if (arg && !SUB.test(arg)) {
                     await setStyle(`${String(n.style).trim()} ${arg}`.trim());
@@ -243,6 +359,7 @@ function register() {
             if (low === 'preview') { await doPreview(false); return ''; }
             if (low === 'preview+' || low === 'full') { await doPreview(true); return ''; }
             if (low === 'raw') { await doRaw(); return ''; }
+            if (low === 'ghosts') { await doGhostReport(); return ''; }
             if (low === 'rawcmd') { await echo('[bbs-img] ' + (st.lastCommand || sdCommand(buildPrompt()))); return ''; }
 
             if (low === 'on' || low === 'off') {
@@ -270,7 +387,7 @@ function register() {
             if (!r.ok && r.reason !== 'duplicate') await echo(`[bbs-img] ${r.reason}`);
             return '';
         },
-        helpString: '/bbs-img 出图 · preview 看镜头来源 · preview+ 看完整提示词 · raw 看快照 · rawcmd 看提交命令 · on/off 自动出图 · style=xxx 画风前缀（auto 清空） · reset 清去重',
+        helpString: '/bbs-img 出图 · preview 看镜头来源 · preview+ 看完整提示词 · raw 看快照 · rawcmd 看提交命令 · ghosts 看幽灵楼是否已排除 · on/off 自动出图 · style=xxx 画风前缀（auto 清空） · reset 清去重',
     }));
 
     try {
@@ -280,6 +397,13 @@ function register() {
         });
     } catch (e) {
         console.warn('[bbs-img] 事件订阅失败', e);
+    }
+
+    // 幽灵楼(用户自己 /hide 的楼)自动标番外,不让柏宝书把它们摘进记忆。
+    try {
+        bindGhostSweep();
+    } catch (e) {
+        console.warn('[bbs-img] 幽灵楼同步初始化失败', e);
     }
 
     console.log('[bbs-img] 已加载 v' + VERSION + '，自动出图' + (st.enabled ? '开' : '关'));

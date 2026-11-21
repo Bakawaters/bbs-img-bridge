@@ -187,8 +187,25 @@ echoes.length = 0; commands.length = 0; captured = null; onMessage = null;
 
 /* ---- 9. 管道清洁度 ---- */
 r = await run('clean', snapshots.shot, '');
-ok(!/[|｜]/.test(r.commands[0]), '命令里没有管道符');
+ok(!/(?<!\\)\|/.test(r.commands[0]), '命令里没有裸管道符（字面 | 必须转义成 \\|）');
 ok(!/width=|height=/.test(r.commands[0]), '不再传宽高（交给面板）');
+
+/* ---- 9b. MOSS 控制标签不能被标点替换改坏 ---- */
+const tagSnap = {
+    ...snapshots.shot,
+    vars: { situation: '<|center_frame|>林夏跪坐在地板上<|/center_frame|>木地板纹理清晰' },
+};
+await run('tags-clear-style', tagSnap, 'style=auto'); // 前面 style 用例写进了 store，先清掉
+r = await run('tags', tagSnap, '');
+const tagCmd = r.commands[0];
+ok(tagCmd.includes('<\\|center_frame\\|>'), '标签竖线按 STscript 规则转义成 \\|');
+ok(!/，center_frame，/.test(tagCmd), '标签内部不会冒出中文逗号');
+ok(!/<，|，>/.test(tagCmd), '标签两侧不会被塞逗号');
+ok(tagCmd.slice('/sd extend=false '.length).replace(/\\\|/g, '|') === tagSnap.vars.situation,
+    '酒馆解析去掉转义后，提示词与镜头原文逐字相同');
+
+r = await run('tags-preview', tagSnap, 'preview+');
+ok(r.echoes.join('\n').includes('<｜center_frame｜>'), 'preview 里标签是可读的全角竖线，不切断命令');
 
 /* ---- 10. 幽灵楼自动排除(不参与柏宝书记忆) ---- */
 const ghostChat = () => ([

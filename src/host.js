@@ -1,39 +1,18 @@
 /**
  * bbs-img-bridge host 部分 —— 与 SillyTavern 打交道的那一半。
  * 由 build.mjs 与 src/scene.js 拼成 index.js（ST 只加载单个 js，不支持 import）。
+ *
+ * v2.0：只留管道。取快照 → 取镜头/兜底 → 拼 /sd → 去重。参数面只剩 style。
  */
-
-const CFG = {
-    maxPeople: 3,
-    style: '写实摄影，浅景深',
-    sizeMulti: { w: 1248, h: 832 },
-};
 
 const LS = {
     enabled: 'bbs_img_enabled',
     style: 'bbs_img_style',
-    maxchars: 'bbs_img_maxchars',
-    detail: 'bbs_img_detail',
-    size: 'bbs_img_size',
-    people: 'bbs_img_people',
-    view: 'bbs_img_view',
-    bbox: 'bbs_img_bbox',
 };
 
 const st = {
     enabled: localStorage.getItem(LS.enabled) === 'true',
-    style: localStorage.getItem(LS.style),   // null = 没设过，走自动判断
-    view: localStorage.getItem(LS.view) || 'auto',   // auto | pov | two
-    bbox: localStorage.getItem(LS.bbox) !== 'false',  // 默认带 bbox；off = 纯自然语言
-    summaryMax: Number(localStorage.getItem(LS.maxchars)) || 140,
-    detail: (() => {
-        const raw = localStorage.getItem(LS.detail);
-        if (raw === null) return 0;            // 默认 0 = 分段不截断
-        const m = Number(raw);
-        return m > 0 ? m : 0;
-    })(),
-    size: JSON.parse(localStorage.getItem(LS.size) || 'null') || CFG.sizeMulti,
-    maxPeople: Number(localStorage.getItem(LS.people)) || CFG.maxPeople,
+    style: localStorage.getItem(LS.style),   // null = 不加画风前缀
     busy: false,
     lastKey: '',
     lastCommand: '',
@@ -69,7 +48,6 @@ function collectCards() {
     for (const ch of ctx.characters || []) {
         if (ch?.name) cards[ch.name] = String(ch.description || '');
     }
-    // 群聊成员有时不在 characters 里（charId 索引）
     for (const g of ctx.groups || []) {
         for (const id of g?.members || []) {
             const ch = (ctx.characters || [])[Number(id)];
@@ -87,79 +65,38 @@ function collectCards() {
     return cards;
 }
 
-/**
- * 画风词优先级：显式设置 > 角色卡里的风格信号 > ST 的 Prompt Prefix > 兜底。
- * 不能一律「写实摄影」——角色是二次元设定时，真人质感会变成 cosplay 感。
- */
-function resolveStyle(cards) {
-    if (st.style) return { style: st.style, from: '手动设置' };
-
-    const blob = Object.values(cards || {}).join(' ').slice(0, 6000);
-    if (/动漫|二次元|日系插画|漫画风|赛璐璐|galgame|视觉小说|美少女|呆毛|猫耳|兽耳|异色瞳|anime|illustration/i.test(blob)) {
-        return { style: '动漫插画，赛璐璐上色', from: '角色卡(二次元)' };
-    }
-    if (/写实|真人|照片|摄影|realistic|photo/i.test(blob)) {
-        return { style: '写实摄影，浅景深', from: '角色卡(写实)' };
-    }
-
-    const sd = ctxOrNull()?.extensionSettings?.sd;
-    const prefix = String(sd?.prompt_prefix || '').trim();
-    if (prefix) return { style: '', from: 'ST 的 Prompt Prefix' };
-
-    return { style: '写实摄影，浅景深', from: '兜底' };
-}
-
-function activeChatName() {
-    const ctx = ctxOrNull();
-    return ctx?.name2 || '';
-}
-
 /* ---------------- 出图 ---------------- */
 
 function buildPrompt() {
     const snap = getSnapshot();
     if (!snap) return { ok: false, reason: '柏宝书没加载，或这个聊天还没有记忆数据' };
 
-    const cards = collectCards();
-    const { style, from } = resolveStyle(cards);
     const res = composeScene({
         snapshot: snap,
-        cards,
-        style,
-        styleFrom: from,
-        view: st.view,
-        bbox: st.bbox,
-        userName: ctxOrNull()?.name1 || '',
-        summaryMax: st.summaryMax,
-        detail: st.detail,
-        maxPeople: st.maxPeople,
-        width: st.size?.w || CFG.sizeMulti.w,
-        height: st.size?.h || CFG.sizeMulti.h,
+        cards: collectCards(),
+        style: st.style || '',
     });
 
-    if (!res.text) return { ok: false, reason: '组不出提示词：柏宝书里当前场景没有可画的人', report: res.report };
+    if (!res.text) return { ok: false, reason: '拼不出提示词', report: res.report };
     return { ok: true, ...res, revision: snap.revision };
 }
 
 function sdCommand(res) {
     // STscript：/sd 只有一个非 split 的无名参数，parser 会把命令后所有字符原样收下
     // （见 SlashCommandParser.parseUnnamedArgument，split=false 分支），
-    // 所以 JSON 既不用引号也不能有管道符 —— 加了引号反而会变成字面字符。
+    // 所以文本既不用引号也不能有管道符 —— 加了引号反而会变成字面字符。
+    // 宽高不传：交给酒馆 Image Generation 面板，避免扩展和工作流各写一套。
     const text = String(res.text).replace(/[|｜]/g, '，');
-    return `/sd extend=false width=${res.width} height=${res.height} ${text}`;
+    return `/sd extend=false ${text}`;
 }
 
 async function doGenerate(force = false) {
     const built = buildPrompt();
-    if (!built.ok) {
-        return built;
-    }
+    if (!built.ok) return built;
     if (st.busy) return { ok: false, reason: '上一张还没出完' };
 
     const key = `${built.revision}|${built.text}`;
-    if (!force && key === st.lastKey) {
-        return { ok: false, reason: 'duplicate' };
-    }
+    if (!force && key === st.lastKey) return { ok: false, reason: 'duplicate' };
 
     const cmd = sdCommand(built);
     const ctx = ctxOrNull();
@@ -169,11 +106,9 @@ async function doGenerate(force = false) {
     st.lastKey = key;
     st.lastCommand = cmd;
     try {
-        console.log('[bbs-img] 出图', built.mode, built.width + 'x' + built.height, built.text);
+        console.log('[bbs-img] 出图', built.mode, built.text);
         const url = await ctx.executeSlashCommandsWithOptions(cmd);
-        if (!url) {
-            return { ok: false, reason: '出图命令执行了但没拿到图片地址，用 /bbs-img rawcmd 看提交内容', cmd };
-        }
+        if (!url) return { ok: false, reason: '出图命令执行了但没拿到图片地址，用 /bbs-img rawcmd 看提交内容', cmd };
         return { ok: true, mode: built.mode, report: built.report };
     } catch (e) {
         console.warn('[bbs-img] 出图失败', e);
@@ -202,30 +137,23 @@ async function doPreview(verbose) {
     const built = buildPrompt();
     if (!built.ok && !built.report) { await echo('[bbs-img] ' + built.reason); return; }
 
-    await echo('[bbs-img] ' + (built.report || []).join(' | '));
+    if (built.report?.length) await echo('[bbs-img] ' + built.report.join(' | '));
     if (!built.ok) { await echo('[bbs-img] ' + built.reason); return; }
 
-    const one = built.mode === 'single' || built.mode === 'pov';
-    const cap = built.cap || st.summaryMax;
-    // maxchars 是天花板不是目标：内容不够就写不满，得靠 situation/场景/外貌 加料
-    const shortNote = one && Number.isFinite(cap) && built.text.length < cap * 0.7
-        ? `（上限 ${cap} 字，没写满：长度由 situation / 场景 / 外貌的内容量决定，调大上限不会让提示词变长）`
-        : '';
-    await echo(`[bbs-img] ${built.mode} ${built.width}x${built.height}，提示词 ${built.text.length} 字${shortNote}`);
+    await echo(`[bbs-img] ${built.mode}，提示词 ${built.text.length} 字`);
     if (verbose) {
         await echo('[bbs-img] ' + built.text);
         await echo('[bbs-img] 命令: ' + sdCommand(built));
     } else {
-        // 头 200 + 尾 120：画风这类追加在后缀的词，只显示开头会让人以为没生效
         const head = built.text.slice(0, 200);
         const tail = built.text.slice(-120);
         const shown = built.text.length > 320 ? `${head}……${tail}` : built.text;
-        const more = built.text.length > 320 ? `（预览显示首尾，实际提交 ${built.text.length} 字，看全用 preview+）` : '';
+        const more = built.text.length > 320 ? `（预览显示首尾，实际 ${built.text.length} 字，看全用 preview+）` : '';
         await echo('[bbs-img] ' + shown + more);
     }
 
     const sd = ctxOrNull()?.extensionSettings?.sd;
-    if (sd && !/moss/i.test(String(sd.comfy_workflow || ''))) {
+    if (sd && sd.comfy_workflow && !/moss/i.test(String(sd.comfy_workflow))) {
         await echo(`[bbs-img] ⚠ 当前 ComfyUI 工作流是 ${sd.comfy_workflow}，不是 MOSS 的（文件名里应含 moss）`);
     }
 }
@@ -233,14 +161,18 @@ async function doPreview(verbose) {
 async function doRaw() {
     const snap = getSnapshot();
     if (!snap) { await echo('[bbs-img] 拿不到快照'); return; }
-    const sf = snap.state?.sceneFocus || null;
     const slim = {
         revision: snap.revision,
         vars: snap.vars,
-        state: { time: snap.state?.time, location: snap.state?.location, locationPath: snap.state?.locationPath, sceneFocus: sf },
+        state: {
+            time: snap.state?.time,
+            location: snap.state?.location,
+            locationPath: snap.state?.locationPath,
+            sceneFocus: snap.state?.sceneFocus || null,
+        },
         protagonist: snap.protagonist,
         scenes: (snap.scenes || []).slice(0, 3).map(s => ({ name: s.name, desc: s.desc })),
-        npcs: (snap.npcs || []).slice(0, 4).map(n => ({ name: n.name, desc: n.desc, outfit: n.outfit, condition: n.condition })),
+        npcs: (snap.npcs || []).slice(0, 6).map(n => ({ name: n.name, desc: n.desc, outfit: n.outfit, condition: n.condition })),
         coverage: snap.coverage,
     };
     await echo('[bbs-img] ' + JSON.stringify(slim));
@@ -256,84 +188,28 @@ function register() {
 
     const setStyle = async (v) => {
         v = String(v ?? '').trim();
-        if (!v || /^(auto|默认|自动)$/i.test(v)) {
+        if (!v || /^(auto|默认|自动|off)$/i.test(v)) {
             st.style = null;
             localStorage.removeItem(LS.style);
-            await echo('[bbs-img] 画风改回自动（角色卡二次元→动漫插画，否则写实摄影）');
+            await echo('[bbs-img] 画风前缀已清空，提示词只用镜头原文');
         } else {
             st.style = v;
             localStorage.setItem(LS.style, v);
-            await echo(`[bbs-img] 画风固定为：${st.style}`);
+            await echo(`[bbs-img] 画风前缀固定为：${st.style}`);
         }
     };
-    const setView = async (v) => {
-        const t = String(v ?? '').trim().toLowerCase();
-        let mode = 'auto';
-        if (/^(pov|first|1st|第一人称)$/.test(t)) mode = 'pov';
-        else if (/^(two|双人|多人|三人称|第三)$/.test(t)) mode = 'two';
-        else if (!/^(auto|默认|自动)$/.test(t) && t) { await echo('[bbs-img] view= 只认 auto / pov / two'); return; }
-        st.view = mode;
-        localStorage.setItem(LS.view, mode);
-        await echo(`[bbs-img] 视角：${{ auto: '自动（镜头里写第一人称才走 pov）', pov: '固定第一人称，画面只画对方', two: '固定双人同框' }[mode]}`);
-    };
-    const setBbox = async (v) => {
-        const t = String(v ?? '').trim().toLowerCase();
-        if (!/^(on|off|true|false|1|0|yes|no)$/.test(t)) { await echo('[bbs-img] bbox= 只认 on / off'); return; }
-        st.bbox = /^(on|true|1|yes)$/.test(t);
-        localStorage.setItem(LS.bbox, String(st.bbox));
-        await echo(st.bbox ? '[bbs-img] 带 bbox：按人数/构图给坐标框' : '[bbs-img] 不带 bbox：整段文本直接提交，位置靠模型自己排');
-    };
-    const setPeople = async (v) => {
-        const n = Number(String(v).match(/\d/)?.[0]);
-        if (!n) { await echo('[bbs-img] people= 后面要跟数字 1–3'); return; }
-        st.maxPeople = Math.max(1, Math.min(3, n));
-        localStorage.setItem(LS.people, String(st.maxPeople));
-        await echo(`[bbs-img] 最多画 ${st.maxPeople} 人`);
-    };
-    const setMaxchars = async (v) => {
-        const asked = Number(String(v).match(/\d+/)?.[0]) || 140;
-        st.summaryMax = Math.max(60, asked);   // 只有下限，没有上限
-        localStorage.setItem(LS.maxchars, String(st.summaryMax));
-        await echo(`[bbs-img] 镜头字数上限 ${st.summaryMax}`);
-    };
-    const setDetail = async (v) => {
-        const m = Number(String(v).replace(/[^\d.]/g, ''));
-        if (!Number.isFinite(m)) { await echo('[bbs-img] detail= 后面要跟倍数，比如 0.5；0 或 auto = 不截断'); return; }
-        st.detail = m > 0 ? m : 0;
-        localStorage.setItem(LS.detail, String(st.detail));
-        if (!st.detail) { await echo('[bbs-img] 分段不截断：外貌/服装/状态/场景/item 原文有多少字进多少字'); return; }
-        await echo(`[bbs-img] 分段截断 ×${st.detail}：外貌 ${Math.round(70 * st.detail)} / 服装 ${Math.round(30 * st.detail)} / 状态 ${Math.round(24 * st.detail)} / 场景 ${Math.round(70 * st.detail)} / item ${Math.round(90 * st.detail)}`);
-    };
-    const setSize = async (v) => {
-        const m = String(v).match(/(\d+)\s*[xX*]\s*(\d+)/);
-        if (!m) { await echo('[bbs-img] size= 要写成 1248x832 这样'); return; }
-        st.size = { w: Number(m[1]), h: Number(m[2]) };
-        localStorage.setItem(LS.size, JSON.stringify(st.size));
-        await echo(`[bbs-img] 多人图尺寸 ${st.size.w}x${st.size.h}（bbox 会按新尺寸重算）`);
-    };
 
-    /*
-     * ⚠️ ST 的解析器会把任何 `key=value` 当成命名参数（正则 /^(\w+)=/），
-     * 所以 /bbs-img style=xxx 里的 style 根本不会出现在无名参数里 ——
-     * 必须从第 1 个实参（named）里读，只读 value 会变成"啥也没设，直接出图"。
-     */
     const namedArgumentList = [];
     try {
         const N = ctx.SlashCommandNamedArgument ?? ctx.SlashCommandParser?.SlashCommandNamedArgument;
         if (N?.fromProps) {
-            for (const [name, description] of [
-                ['style', '画风后缀；auto 回到自动判断'],
-                ['view', '视角：auto 自动 / pov 第一人称 / two 双人同框'],
-                ['bbox', 'on 给坐标框（默认）/ off 纯自然语言，位置交给模型'],
-                ['maxchars', '镜头字数上限，默认 140；实测 90-120 最准（不设上限，填多少就是多少）'],
-                ['detail', '分段截断倍数；不填=不截断，0.5=收一半，2=放宽一倍'],
-                ['people', '最多画几个人 1–3'],
-                ['size', '多人图尺寸，如 1248x832'],
-            ]) {
-                namedArgumentList.push(N.fromProps({
-                    name, description, typeList: ['string'], isRequired: false, acceptsMultiple: false,
-                }));
-            }
+            namedArgumentList.push(N.fromProps({
+                name: 'style',
+                description: '画风前缀，拼在镜头原文前面；auto/off 清空',
+                typeList: ['string'],
+                isRequired: false,
+                acceptsMultiple: false,
+            }));
         }
     } catch (e) {
         console.warn('[bbs-img] 命名参数声明失败（不影响使用）', e);
@@ -345,8 +221,7 @@ function register() {
         namedArgumentList,
         callback: async (named, value) => {
             const n = named || {};
-            let touched = false;
-            let arg = String(value || '').trim();
+            const arg = String(value || '').trim();
 
             /*
              * ST 的命名参数值遇到空格就截断：/bbs-img style=anima char
@@ -354,23 +229,17 @@ function register() {
              * 无名参数 → 直接出图。这里把剩下的词并回画风，并且不再出图。
              */
             const SUB = /^(preview\+?|full|raw|rawcmd|on|off|reset)$/i;
-            if (n.style !== undefined && arg && !SUB.test(arg)) {
-                const merged = `${String(n.style).trim()} ${arg}`.trim();
-                await setStyle(merged);
-                await echo('[bbs-img] 画风带空格时用双引号更稳：/bbs-img style="anima char"');
+            if (n.style !== undefined) {
+                if (arg && !SUB.test(arg)) {
+                    await setStyle(`${String(n.style).trim()} ${arg}`.trim());
+                    await echo('[bbs-img] 画风带空格时用双引号更稳：/bbs-img style="anima char"');
+                    return '';
+                }
+                await setStyle(n.style);
                 return '';
             }
 
-            if (n.style !== undefined) { await setStyle(n.style); touched = true; }
-            if (n.view !== undefined) { await setView(n.view); touched = true; }
-            if (n.bbox !== undefined) { await setBbox(n.bbox); touched = true; }
-            if (n.people !== undefined) { await setPeople(n.people); touched = true; }
-            if (n.size !== undefined) { await setSize(n.size); touched = true; }
-            if (n.detail !== undefined) { await setDetail(n.detail); touched = true; }
-            if (n.maxchars !== undefined) { await setMaxchars(n.maxchars); touched = true; }
-
             const low = arg.toLowerCase();
-
             if (low === 'preview') { await doPreview(false); return ''; }
             if (low === 'preview+' || low === 'full') { await doPreview(true); return ''; }
             if (low === 'raw') { await doRaw(); return ''; }
@@ -392,31 +261,16 @@ function register() {
             const mStyle = arg.match(/style=(.*)$/i);
             if (mStyle) { await setStyle(mStyle[1]); return ''; }
 
-            const mBbox = arg.match(/bbox=(on|off|true|false|1|0)/i);
-            if (mBbox) { await setBbox(mBbox[1]); return ''; }
-
-            const mView = arg.match(/view=(auto|pov|two|第一人称|双人)/i);
-            if (mView) { await setView(mView[1]); return ''; }
-
-            const mPeople = arg.match(/people=(\d)/i);
-            if (mPeople) { await setPeople(mPeople[1]); return ''; }
-
-            const mSize = arg.match(/size=(\d+)x(\d+)/i);
-            if (mSize) { await setSize(`${mSize[1]}x${mSize[2]}`); return ''; }
-
-            const mDetail = arg.match(/detail=(\d+(?:\.\d+)?)/i);
-            if (mDetail) { await setDetail(mDetail[1]); return ''; }
-
-            const mMaxchars = arg.match(/maxchars=(\d+)/i);
-            if (mMaxchars) { await setMaxchars(mMaxchars[1]); return ''; }
-
-            if (!arg && touched) return '';   // 只设参数，不出图
+            if (/^\w+=/.test(arg)) {
+                await echo(`[bbs-img] 不认识的参数 ${arg}。v2.0 只保留 style=，view/bbox/people/size/detail/maxchars 已删除`);
+                return '';
+            }
 
             const r = await doGenerate(true);
             if (!r.ok && r.reason !== 'duplicate') await echo(`[bbs-img] ${r.reason}`);
             return '';
         },
-        helpString: '/bbs-img 出图 · preview 看字段来源 · preview+ 看完整提示词 · raw 看快照 · rawcmd 看提交命令 · on/off 自动 · style= 画风 · view=pov 第一人称 · people=3 · size=1248x832 · reset',
+        helpString: '/bbs-img 出图 · preview 看镜头来源 · preview+ 看完整提示词 · raw 看快照 · rawcmd 看提交命令 · on/off 自动出图 · style=xxx 画风前缀（auto 清空） · reset 清去重',
     }));
 
     try {

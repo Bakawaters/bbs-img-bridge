@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v2.1.1
+ * 柏宝书 · 场景生图桥接 v2.1.2
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -14,7 +14,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '2.1.1';
+const VERSION = '2.1.2';
 
 /**
  * bbs-scene —— 柏宝书快照 → 一段提示词
@@ -266,13 +266,22 @@ function buildPrompt() {
     return { ok: true, ...res, revision: snap.revision };
 }
 
+/**
+ * STscript 把裸 `|` 当命令分隔符，提示词里出现就会把后半段切成下一条命令。
+ * 必须转义成 `\|`（parser 的 testSymbol 会吃掉反斜杠、只留字面竖线），
+ * 不能换成别的字符 —— MOSS 的控制标签就是 <|center_frame|> 这种形式，
+ * 换成 `，` 会变成 <，center_frame，>，模型读到的是根本不存在的标签。
+ */
+function escapePipes(s) {
+    return String(s ?? '').replace(/\|/g, '\\|');
+}
+
 function sdCommand(res) {
     // STscript：/sd 只有一个非 split 的无名参数，parser 会把命令后所有字符原样收下
     // （见 SlashCommandParser.parseUnnamedArgument，split=false 分支），
-    // 所以文本既不用引号也不能有管道符 —— 加了引号反而会变成字面字符。
+    // 所以文本不用加引号 —— 加了引号反而会变成字面字符。
     // 宽高不传：交给酒馆 Image Generation 面板，避免扩展和工作流各写一套。
-    const text = String(res.text).replace(/[|｜]/g, '，');
-    return `/sd extend=false ${text}`;
+    return `/sd extend=false ${escapePipes(res.text)}`;
 }
 
 async function doGenerate(force = false) {
@@ -457,7 +466,8 @@ function bindGhostSweep() {
 /* ---------------- 输出 ---------------- */
 
 function safeEcho(s) {
-    return String(s ?? '').replace(/[|｜]/g, '，').replace(/\{\{/g, '{ {').replace(/[\r\n]+/g, ' ').slice(0, 4000);
+    // 回显里不能留裸 `|`（同样会切断命令），换成全角 `｜`：看起来一样，解析器不认。
+    return String(s ?? '').replace(/\|/g, '｜').replace(/\{\{/g, '{ {').replace(/[\r\n]+/g, ' ').slice(0, 4000);
 }
 
 async function echo(text) {

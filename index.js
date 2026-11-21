@@ -1,5 +1,5 @@
 /**
- * 柏宝书 · 场景生图桥接 v2.1.0
+ * 柏宝书 · 场景生图桥接 v2.1.1
  * https://github.com/Bakawaters/bbs-img-bridge
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
@@ -14,7 +14,7 @@
  */
 (function () {
 'use strict';
-const VERSION = '2.1.0';
+const VERSION = '2.1.1';
 
 /**
  * bbs-scene —— 柏宝书快照 → 一段提示词
@@ -316,6 +316,17 @@ async function doGenerate(force = false) {
  */
 const OMIT_BY = 'bbs-img-bridge';
 
+function ensureExtra(m) {
+    if (!m.extra || typeof m.extra !== 'object') m.extra = {};
+    return m.extra;
+}
+
+/** 这楼摘过没有(只认物理存在的叶子) */
+function hasLeaf(m) {
+    const l = m?.extra?.bbs_leaf;
+    return !!(l && l.id && l.delta);
+}
+
 /** 幽灵楼 = ST 隐藏(is_system) 且不是柏宝书隐藏的、不是原生系统楼、不是搬运锚点楼 */
 function isGhostFloor(m) {
     if (!m || typeof m !== 'object') return false;
@@ -327,45 +338,85 @@ function isGhostFloor(m) {
 }
 
 /**
- * 同步一遍。就地改 chat[].extra,返回 { marked, restored }。
+ * 被柏宝书「盖过章」的幽灵楼(2.1.0 的坑):
+ * 柏宝书的 syncWindowHiddenState 会给窗口外、已被覆盖、又还没打 bbs_hidden 的楼补写 bbs_hidden
+ * (它不区分是自己藏的、还是用户藏的)。一旦被补写,这楼就不再满足 isGhostFloor,标记被撤回 →
+ * 柏宝书把它当「自家的隐藏旧楼」重新排队摘要 → 楼内面板显示「待摘要」。
+ *
+ * 判据:隐藏 + 有 bbs_hidden + 从没摘过(无叶子) + 非用户楼 + 无 extra.type / 种子叶子。
+ * 柏宝书只会隐藏「已被摘要覆盖」的楼,所以「它盖了章却从来没有叶子」基本只可能是被误盖的那种。
+ */
+function isOrphanGhost(m) {
+    if (!m || typeof m !== 'object' || m.is_user) return false;
+    const ex = m.extra || {};
+    if (ex.type) return false;
+    if (!ex.bbs_hidden) return false;
+    if (ex.bbs_leaf && ex.bbs_leaf.seed) return false;
+    if (hasLeaf(m)) return false;           // 有摘录 → 柏宝书正常隐藏的旧楼,别碰
+    return m.is_system === true;
+}
+
+/**
+ * 同步一遍。就地改 chat[].extra,返回 { marked, restored, healed }。
  * 纯逻辑、无 IO,方便单测。
+ *
+ * 状态以**自己的标记**(bbs_omit_by)为准,不看 bbs_hidden —— 因为柏宝书随时可能给同一楼补写
+ * bbs_hidden,用 bbs_hidden 反推会把标记撤掉(这就是 2.1.0 的 bug)。
  */
 function sweepGhostFloors(chat) {
     let marked = 0;
     let restored = 0;
-    if (!Array.isArray(chat)) return { marked, restored };
+    let healed = 0;
+    if (!Array.isArray(chat)) return { marked, restored, healed };
 
     for (const m of chat) {
         if (!m || typeof m !== 'object') continue;
-        const ex = m.extra;
+        const ex = m.extra || {};
+        const hidden = m.is_system === true;
+        const mine = ex.bbs_omit_by === OMIT_BY;
 
-        if (isGhostFloor(m)) {
-            if (ex?.bbs_omit === true) continue;        // 已经是番外(自己的或用户标的),不动
-            if (ex?.bbs_omit_by === OMIT_BY) {          // 用户手动撤销过 → 尊重,不再强加
+        if (mine) {
+            if (hidden) {
+                if (ex.bbs_omit === true) continue;  // 已在排除状态,保持
+                // 番外被取消(你点掉了按钮)→ 交还控制权,不再强加
                 delete ex.bbs_omit_by;
                 continue;
             }
-            m.extra = { ...(ex || {}), bbs_omit: true, bbs_omit_by: OMIT_BY };
-            marked++;
-        } else if (ex?.bbs_omit_by === OMIT_BY) {
-            const { bbs_omit: _o, bbs_omit_by: _b, ...rest } = ex; // 楼恢复可见 → 撤回
-            m.extra = rest;
+            // 楼恢复可见 → 撤回标记,记忆照旧恢复
+            delete ex.bbs_omit;
+            delete ex.bbs_omit_by;
             restored++;
+            continue;
+        }
+
+        if (!hidden) continue;
+        if (ex.bbs_omit === true) continue; // 已经是番外(你自己标的),不接管、不改来源
+
+        if (isGhostFloor(m)) {
+            const e = ensureExtra(m);
+            e.bbs_omit = true;
+            e.bbs_omit_by = OMIT_BY;
+            marked++;
+        } else if (isOrphanGhost(m)) {
+            const e = ensureExtra(m);
+            e.bbs_omit = true;
+            e.bbs_omit_by = OMIT_BY;
+            healed++;
         }
     }
-    return { marked, restored };
+    return { marked, restored, healed };
 }
 
 /** 扫当前聊天并落盘。没有变化就什么都不做(不空写 chat 文件)。 */
 function runGhostSweep(reason) {
     const ctx = ctxOrNull();
     const chat = ctx?.chat;
-    if (!Array.isArray(chat)) return { marked: 0, restored: 0 };
+    if (!Array.isArray(chat)) return { marked: 0, restored: 0, healed: 0 };
 
     const r = sweepGhostFloors(chat);
-    if (!r.marked && !r.restored) return r;
+    if (!r.marked && !r.restored && !r.healed) return r;
 
-    console.log(`[bbs-img] 幽灵楼同步(${reason}):标记 ${r.marked},撤回 ${r.restored}`);
+    console.log(`[bbs-img] 幽灵楼同步(${reason}):标记 ${r.marked},撤回 ${r.restored},修复 ${r.healed}`);
     try { ctx.saveChat?.(); } catch (e) { console.warn('[bbs-img] 保存聊天失败', e); }
     return r;
 }
@@ -469,14 +520,15 @@ async function doGhostReport() {
     if (!Array.isArray(chat)) { await echo('[bbs-img] 拿不到聊天'); return; }
 
     const r = runGhostSweep('手动');
-    let ghost = 0;
-    let mine = 0;
+    let hidden = 0;
+    let excluded = 0;
     for (const m of chat) {
-        if (!isGhostFloor(m)) continue;
-        ghost++;
-        if (m.extra?.bbs_omit_by === OMIT_BY) mine++;
+        if (!m || m.is_system !== true) continue;
+        if (!(isGhostFloor(m) || isOrphanGhost(m) || m.extra?.bbs_omit_by === OMIT_BY)) continue;
+        hidden++;
+        if (m.extra?.bbs_omit === true) excluded++;
     }
-    await echo(`[bbs-img] 幽灵楼 ${ghost} 个,其中 ${mine} 个已标番外(不计入柏宝书记忆);本次新标 ${r.marked}、撤回 ${r.restored}`);
+    await echo(`[bbs-img] 幽灵楼 ${hidden} 个,已排除出记忆 ${excluded} 个;本次新标 ${r.marked}、修复 ${r.healed}、撤回 ${r.restored}`);
 }
 
 /* ---------------- 注册 ---------------- */

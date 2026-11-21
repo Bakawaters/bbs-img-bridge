@@ -17,13 +17,11 @@ const banner = `/**
  *
  * 本文件由 src/scene.js + src/host.js 自动拼装，勿手改。
  *   /bbs-img            按柏宝书当前场景出图
- *   /bbs-img preview    看每个字段的来源
+ *   /bbs-img preview    看提示词来自哪里
  *   /bbs-img preview+   看完整提示词 / 提交命令
  *   /bbs-img raw        倾倒快照（排查）
  *   /bbs-img on|off     收到 AI 消息自动出图
- *   /bbs-img style=xxx  改画风后缀
- *   /bbs-img people=3   最多画几个人
- *   /bbs-img size=1248x832  多人图尺寸
+ *   /bbs-img style=xxx  画风前缀（auto 清空）
  *   /bbs-img reset      清去重
  */`;
 

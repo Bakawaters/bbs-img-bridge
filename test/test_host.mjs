@@ -11,6 +11,8 @@ const commands = [];
 const store = {};          // 跨 run 共享，模拟 localStorage 持久化
 let captured = null;       // 注册的 /bbs-img 命令对象
 let onMessage = null;      // MESSAGE_RECEIVED 回调
+let handlers = {};         // 其余 ST 事件回调
+let saveCount = 0;         // ctx.saveChat 调用次数
 
 const snapshots = {
     shot: {
@@ -38,7 +40,7 @@ const snapshots = {
     empty: { revision: 10, state: { sceneFocus: null }, vars: {}, npcs: [], scenes: [], protagonist: {} },
 };
 
-function makeCtx(snap) {
+function makeCtx(snap, opts = {}) {
     const context = {
         SillyTavern: {
             getContext: () => ({
@@ -49,8 +51,21 @@ function makeCtx(snap) {
                 extensionSettings: { sd: { comfy_workflow: 'MOSS_质量版_25步.json' } },
                 SlashCommand: { fromProps: o => o },
                 SlashCommandParser: { addCommandObject: o => { captured = o; } },
-                eventSource: { on: (ev, fn) => { onMessage = fn; } },
-                eventTypes: { MESSAGE_RECEIVED: 'msg' },
+                eventSource: {
+                    on: (ev, fn) => {
+                        handlers[ev] = fn;
+                        if (ev === 'msg') onMessage = fn;
+                    },
+                },
+                eventTypes: {
+                    MESSAGE_RECEIVED: 'msg',
+                    CHAT_CHANGED: 'chat',
+                    CHARACTER_MESSAGE_RENDERED: 'cmr',
+                    USER_MESSAGE_RENDERED: 'umr',
+                    MESSAGE_SWIPED: 'swipe',
+                },
+                chat: opts.chat || [],
+                saveChat: () => { saveCount++; },
                 executeSlashCommandsWithOptions: async (cmd) => {
                     if (cmd.startsWith('/echo ')) { echoes.push(cmd.slice(6)); return ''; }
                     commands.push(cmd);
@@ -65,6 +80,8 @@ function makeCtx(snap) {
             removeItem: k => { delete store[k]; },
         },
         document: { readyState: 'complete', addEventListener: () => {} },
+        setTimeout: (fn, ms) => setTimeout(fn, ms),
+        clearTimeout: id => clearTimeout(id),
         console,
     };
     context.globalThis = context;
@@ -74,6 +91,7 @@ function makeCtx(snap) {
 
 function run(name, snap, arg, named = {}) {
     echoes.length = 0; commands.length = 0; captured = null; onMessage = null;
+    handlers = {}; saveCount = 0;
     const ctx = makeCtx(snap);
     vm.runInContext(code, ctx);
     if (!captured) throw new Error(`${name}: 命令没注册`);
@@ -171,6 +189,58 @@ echoes.length = 0; commands.length = 0; captured = null; onMessage = null;
 r = await run('clean', snapshots.shot, '');
 ok(!/[|｜]/.test(r.commands[0]), '命令里没有管道符');
 ok(!/width=|height=/.test(r.commands[0]), '不再传宽高（交给面板）');
+
+/* ---- 10. 幽灵楼自动排除(不参与柏宝书记忆) ---- */
+const ghostChat = () => ([
+    { name: '林夏', is_user: false, is_system: false, mes: '可见回复' },
+    { name: '林夏', is_user: false, is_system: true, mes: '用户点了幽灵按钮' },              // 0? 见下
+    { name: '林夏', is_user: false, is_system: true, extra: { bbs_hidden: true }, mes: '柏宝书隐藏' },
+    { name: 'SillyTavern System', is_user: false, is_system: true, extra: { type: 'narrator' }, mes: '系统楼' },
+    { name: '林夏', is_user: false, is_system: true, mes: '', extra: { bbs_leaf: { seed: true, id: 's', delta: {} } } },
+    { name: '林夏', is_user: false, is_system: true, extra: { bbs_omit: true }, mes: '用户自己标的番外' },
+]);
+
+{
+    const chat = ghostChat();
+    echoes.length = 0; commands.length = 0; captured = null; handlers = {}; saveCount = 0;
+    const ctx = makeCtx(snapshots.shot, { chat });
+    vm.runInContext(code, ctx); // 加载即扫一遍
+
+    const ghost = chat[1];
+    ok(ghost.extra?.bbs_omit === true, '幽灵楼被标为番外(柏宝书按不存在处理)');
+    ok(ghost.extra?.bbs_omit_by === 'bbs-img-bridge', '标记带来源,便于撤回');
+    ok(!chat[2].extra.bbs_omit, '柏宝书自己隐藏的楼不动');
+    ok(!chat[3].extra.bbs_omit, '原生系统楼不动');
+    ok(!chat[4].extra.bbs_omit, '搬运锚点楼(种子叶子)不动');
+    ok(chat[5].extra.bbs_omit_by === undefined, '用户自己标的番外不抢来源');
+    ok(chat[0].extra === undefined, '可见楼不被写入任何标记');
+    ok(saveCount === 1, '有改动才落盘一次');
+
+    // 取消隐藏 → 撤回标记
+    ghost.is_system = false;
+    echoes.length = 0;
+    await captured.callback({}, 'ghosts');
+    ok(ghost.extra === undefined || (ghost.extra.bbs_omit === undefined && ghost.extra.bbs_omit_by === undefined),
+        '取消幽灵后自动撤回标记,记忆恢复');
+    ok(echoes.join('\n').includes('撤回 1'), 'ghosts 报告撤回数');
+
+    // 用户手动点掉番外(保留来源标记)→ 不再强加
+    ghost.is_system = true;
+    ghost.extra = { bbs_omit_by: 'bbs-img-bridge' };
+    echoes.length = 0;
+    await captured.callback({}, 'ghosts');
+    ok(ghost.extra.bbs_omit === undefined, '用户手动撤销后不再强加 omit');
+    ok(ghost.extra.bbs_omit_by === undefined, '顺手清掉来源标记');
+
+    // 已标好的不重复写、也不额外落盘
+    saveCount = 0;
+    ghost.is_system = true;
+    ghost.extra = { bbs_omit: true, bbs_omit_by: 'bbs-img-bridge' };
+    echoes.length = 0;
+    await captured.callback({}, 'ghosts');
+    ok(ghost.extra.bbs_omit === true && saveCount === 0, '已排除的楼不重复写盘');
+    ok(echoes.join('\n').includes('幽灵楼 2 个'), 'ghosts 报告幽灵楼总数');
+}
 
 console.log(`\n${pass} PASS / ${fail} FAIL`);
 process.exit(fail ? 1 : 0);

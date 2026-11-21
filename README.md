@@ -1,61 +1,47 @@
 # 柏宝书生图桥接（bbs-img-bridge）
 
-把**柏宝书维护的当前场景**（谁在场、在哪、在做什么）翻译成 MOSS 能吃的一张图。
+把**柏宝书维护的当前场景**变成一条 `/sd` 命令，交给酒馆出图。
 
-v1.0 的核心不是"再拼一句提示词"，而是解决**多人同框 + 人物交互**：
+v2.0 是一次减法：v1.x 里那套"用规则拼提示词"的组装层（bbox 布局、朝向推断、交互动词→构图、时间→光线词表、标点归一化、按句读截断、画风自检）全部删掉。原因是镜头描述已经交给 LLM 写了，那些规则在实际路径上从来没被执行过。
 
-- 两人以上不再靠一句话描述，而是给每个角色一个 **bbox 布局框**（MOSS 官方 layout JSON，直接当 prompt 文本提交，不需要 ComfyUI 布局节点）
-- **交互动作只写在 `summary.caption`**，每个角色的 `caption` 只写本人的外观/朝向 —— 实测把"抱住对方的腰"写进角色 caption 会多长出一张脸
-- 构图按交互动词分档：贴身接触 → 两框重叠；并排 → 对半分；对峙 → 拉开
+## 它现在只做四件事
 
-## 依赖
+1. 从柏宝书快照里取**画面镜头**：`vars.situation`（也认 `画面` / `镜头` / `shot` / `visual`），没有则回退 `sceneFocus.situation`。
+2. 拿到镜头 → **原文直通**，一个字不改，只可选地在最前面加一段画风前缀。
+3. 拿不到镜头 → 用**场景 desc + 在场人物的外貌/服装/状态**拼一句最小兜底。
+4. 拼成 `/sd extend=false <提示词>` 提交，按 `revision + 提示词` 去重。
 
-- SillyTavern ≥ 1.12.13（TauriTavern 亦可）
-- [柏宝书](https://github.com/baibai-git/ST-BaiBai-Book) 且已有摘要（`state.sceneFocus` 是主数据源）
-- SD 扩展已连上 ComfyUI，工作流是 MOSS 的（文件名含 `moss`）
+宽高不传，交给酒馆 Image Generation 面板。
 
-## 用法
+## 命令
 
 | 命令 | 作用 |
 |---|---|
 | `/bbs-img` | 按当前场景出图 |
-| `/bbs-img preview` | 看每个字段取自哪里（不消耗 GPU） |
-| `/bbs-img preview+` | 额外打印完整提示词与将要提交的命令 |
+| `/bbs-img preview` | 看提示词来自哪里（不消耗 GPU） |
+| `/bbs-img preview+` | 打印完整提示词与提交命令 |
 | `/bbs-img raw` | 倾倒柏宝书快照（排查用） |
-| `/bbs-img rawcmd` | 打印上一次提交的 `/sd` 命令 |
+| `/bbs-img rawcmd` | 打印上一次提交的命令 |
 | `/bbs-img on` / `off` | 收到 AI 消息自动出图 |
-| `/bbs-img style=动漫赛璐璐` | 换画风后缀 |
-| `/bbs-img people=2` | 最多画几个人（1–3） |
-| `/bbs-img size=1248x832` | 多人图尺寸（bbox 会按新尺寸重算） |
+| `/bbs-img style=水粉厚涂，可见笔触` | 画风前缀，拼在镜头原文最前 |
+| `/bbs-img style=auto` | 清空画风前缀 |
 | `/bbs-img reset` | 清去重记录 |
 
-## 字段映射
+## 依赖
 
-| 画面要素 | 来源 |
-|---|---|
-| 画几个人、画谁 | `state.sceneFocus.participants`；空则取 `npcs` 里 `important` / `follow` 的第一人 |
-| 外貌（静态） | `npcs[].desc` → 角色卡 `description` → `protagonist.appearance` → 用户人设 |
-| 当前服装 | `npcs[].outfit` / `protagonist.outfit` |
-| 伤病状态 | `npcs[].condition` / `protagonist.condition` |
-| 场景 | `state.locationPath` 命中的 `scenes[].desc` → `state.location` |
-| 光线 | `state.time` → 时间词表 |
-| **交互/动作** | `state.sceneFocus.situation`（只保留第一句、剥掉心理与因果） |
-| 构图 | `situation` 里的动词 + 人数 |
+- SillyTavern ≥ 1.12.13
+- [柏宝书](https://github.com/baibai-git/ST-BaiBai-Book)，且这个聊天有记忆数据（`getSnapshot()` 可用）
+- 酒馆 SD 扩展已连上 ComfyUI，工作流是 MOSS 的
 
-## 已知边界
+## 边界
 
-- 最多 3 人。第 4 人开始每个角色分到的像素低于 MOSS 的有效下限。
-- `situation` 是叙事句不是画面句，规则清洗只能去掉明显不可画的部分；它写成"她犹豫着要不要开口"这种没有动作的句子时，图会退化成人物摆拍。
-- 柏宝书没摘要过的聊天没有 `sceneFocus`，此时**直接跳过并说明**，不会退回整条消息。
-- 支持自然语言，不支持权重语法（`(word:1.5)` 会被当字面量）。
-
-## 安装
-
-酒馆「扩展 → 安装扩展」填本仓库地址。
+- 镜头写得好不好，取决于写镜头的那套提示词，不取决于本扩展。它只负责搬运。
+- 兜底路径不猜光线、不猜构图、不排位置。没镜头时多人同框的效果就是"各画各的"。
+- 支持自然语言，不支持权重语法（`(word:1.5)` 会被当字面量喂给 Qwen 编码器）。
 
 ## 开发
 
 ```bash
 npm run build   # src/scene.js + src/host.js → index.js（ST 只加载单文件）
-npm test        # 桩测试：字段映射、命令格式、空场景
+npm test        # 33 项管道测试
 ```

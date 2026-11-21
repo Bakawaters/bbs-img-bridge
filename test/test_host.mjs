@@ -193,11 +193,13 @@ ok(!/width=|height=/.test(r.commands[0]), '不再传宽高（交给面板）');
 /* ---- 10. 幽灵楼自动排除(不参与柏宝书记忆) ---- */
 const ghostChat = () => ([
     { name: '林夏', is_user: false, is_system: false, mes: '可见回复' },
-    { name: '林夏', is_user: false, is_system: true, mes: '用户点了幽灵按钮' },              // 0? 见下
-    { name: '林夏', is_user: false, is_system: true, extra: { bbs_hidden: true }, mes: '柏宝书隐藏' },
-    { name: 'SillyTavern System', is_user: false, is_system: true, extra: { type: 'narrator' }, mes: '系统楼' },
+    { name: '林夏', is_user: false, is_system: true, mes: '用户点了幽灵按钮' },
+    { name: '林夏', is_user: false, is_system: true, mes: '柏宝书隐藏的旧楼', extra: { bbs_hidden: true, bbs_leaf: { id: 'l1', delta: {} } } },
+    { name: 'SillyTavern System', is_user: false, is_system: true, mes: '系统楼', extra: { type: 'narrator' } },
     { name: '林夏', is_user: false, is_system: true, mes: '', extra: { bbs_leaf: { seed: true, id: 's', delta: {} } } },
-    { name: '林夏', is_user: false, is_system: true, extra: { bbs_omit: true }, mes: '用户自己标的番外' },
+    { name: '林夏', is_user: false, is_system: true, mes: '用户自己标的番外', extra: { bbs_omit: true } },
+    { name: '林夏', is_user: false, is_system: true, mes: '被柏宝书补写了 bbs_hidden,从没摘过', extra: { bbs_hidden: true } },
+    { name: '旅人', is_user: true, is_system: true, mes: '用户自己的楼被隐藏', extra: { bbs_hidden: true } },
 ]);
 
 {
@@ -207,21 +209,38 @@ const ghostChat = () => ([
     vm.runInContext(code, ctx); // 加载即扫一遍
 
     const ghost = chat[1];
-    ok(ghost.extra?.bbs_omit === true, '幽灵楼被标为番外(柏宝书按不存在处理)');
+    ok(ghost.extra?.bbs_omit === true, '幽灵楼被标番外(柏宝书按不存在处理)');
     ok(ghost.extra?.bbs_omit_by === 'bbs-img-bridge', '标记带来源,便于撤回');
-    ok(!chat[2].extra.bbs_omit, '柏宝书自己隐藏的楼不动');
+    ok(!chat[2].extra.bbs_omit, '柏宝书正常隐藏的旧楼(有叶子)不动');
     ok(!chat[3].extra.bbs_omit, '原生系统楼不动');
     ok(!chat[4].extra.bbs_omit, '搬运锚点楼(种子叶子)不动');
     ok(chat[5].extra.bbs_omit_by === undefined, '用户自己标的番外不抢来源');
+    ok(chat[6].extra.bbs_omit === true && chat[6].extra.bbs_omit_by === 'bbs-img-bridge',
+        '被补写 bbs_hidden 的幽灵楼自动修复(2.1.0 那个坑)');
+    ok(!chat[7].extra.bbs_omit, '被隐藏的用户楼不按幽灵楼处理');
     ok(chat[0].extra === undefined, '可见楼不被写入任何标记');
     ok(saveCount === 1, '有改动才落盘一次');
+
+    echoes.length = 0;
+    await captured.callback({}, 'ghosts');
+    const rep = echoes.join('\n');
+    ok(rep.includes('幽灵楼 3 个'), 'ghosts 报告幽灵楼总数');
+    ok(rep.includes('已排除出记忆 3 个'), 'ghosts 报告已排除数');
+    ok(rep.includes('新标 0') && rep.includes('修复 0'), '已处理过的不重复计数');
+
+    // 核心回归:柏宝书给已标好的幽灵楼补写 bbs_hidden → 标记必须保住
+    ghost.extra.bbs_hidden = true;
+    echoes.length = 0;
+    await captured.callback({}, 'ghosts');
+    ok(ghost.extra.bbs_omit === true && ghost.extra.bbs_omit_by === 'bbs-img-bridge',
+        '柏宝书补写 bbs_hidden 后仍保持排除(不再退回待摘要)');
 
     // 取消隐藏 → 撤回标记
     ghost.is_system = false;
     echoes.length = 0;
     await captured.callback({}, 'ghosts');
-    ok(ghost.extra === undefined || (ghost.extra.bbs_omit === undefined && ghost.extra.bbs_omit_by === undefined),
-        '取消幽灵后自动撤回标记,记忆恢复');
+    ok(ghost.extra?.bbs_omit === undefined && ghost.extra?.bbs_omit_by === undefined,
+        '取消隐藏后自动撤回标记,记忆恢复');
     ok(echoes.join('\n').includes('撤回 1'), 'ghosts 报告撤回数');
 
     // 用户手动点掉番外(保留来源标记)→ 不再强加
@@ -239,7 +258,6 @@ const ghostChat = () => ([
     echoes.length = 0;
     await captured.callback({}, 'ghosts');
     ok(ghost.extra.bbs_omit === true && saveCount === 0, '已排除的楼不重复写盘');
-    ok(echoes.join('\n').includes('幽灵楼 2 个'), 'ghosts 报告幽灵楼总数');
 }
 
 console.log(`\n${pass} PASS / ${fail} FAIL`);
